@@ -537,9 +537,55 @@ test('native createToken maps token when JSRPC omits plaintext and ignores a RES
 	}
 	await expect(missingRemote.repo.info()).resolves.toMatchObject({
 		name: 'repo-1',
-		remote: '',
+		remote: remoteFor('repo-1', 'production'),
 	})
 	expect(restFetch).toHaveBeenCalledTimes(1)
+
+	nativeGet.mockResolvedValueOnce(
+		nativeRepoHandle('repo-1', {
+			createToken: nativeCreateToken,
+			remote: 'repo_1',
+		}),
+	)
+	const identifierRemote = await hybridBinding.get('repo-1')
+	if (identifierRemote.status !== 'ready') {
+		throw new Error('expected native repo to be ready')
+	}
+	await expect(identifierRemote.repo.info()).resolves.toMatchObject({
+		name: 'repo-1',
+		remote: remoteFor('repo-1', 'production'),
+	})
+	nativeGet.mockResolvedValueOnce(
+		nativeRepoHandle('repo-1', {
+			createToken: nativeCreateToken,
+			remote: 'repo_1',
+		}),
+	)
+	await expect(hybridBinding.repo('repo-1').info()).resolves.toMatchObject({
+		remote: remoteFor('repo-1', 'production'),
+	})
+	expect(restFetch).toHaveBeenCalledTimes(3)
+
+	const restRemote = 'https://artifacts.example/git/production/repo-1.git'
+	const restInfo = mockFetch((method, url) =>
+		method === 'GET' && url.pathname.endsWith('/repos/repo-1')
+			? apiResponse(restRepo('repo-1', { remote: restRemote }))
+			: undefined,
+	)
+	nativeGet.mockResolvedValueOnce(
+		nativeRepoHandle('repo-1', {
+			createToken: nativeCreateToken,
+			remote: 'repo_1',
+		}),
+	)
+	const fromRest = await hybridBinding.get('repo-1')
+	if (fromRest.status !== 'ready') {
+		throw new Error('expected native repo to be ready')
+	}
+	await expect(fromRest.repo.info()).resolves.toMatchObject({
+		remote: restRemote,
+	})
+	expect(restInfo).toHaveBeenCalledTimes(1)
 })
 
 test('native createToken falls back to REST only for the JSRPC split failure, and a REST 401 does not replace that error', async () => {

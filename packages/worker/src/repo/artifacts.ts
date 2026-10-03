@@ -292,6 +292,40 @@ function nativeRepoInfo(repo: ArtifactsRepo): ArtifactRepoInfo {
 	}
 }
 
+function isUsableArtifactsGitRemote(remote: string) {
+	if (typeof remote !== 'string' || remote.length === 0) return false
+	try {
+		const url = new URL(remote)
+		if (url.protocol === 'https:') return true
+		return url.protocol === 'http:' && isLoopbackHostname(url.hostname)
+	} catch {
+		return false
+	}
+}
+
+function isArtifactsRemotePathPart(value: string) {
+	return /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(value)
+}
+
+function buildCanonicalArtifactsGitRemote(input: {
+	accountId: string
+	namespace: string
+	repoName: string
+}) {
+	const accountId = input.accountId.trim()
+	const namespace = input.namespace.trim()
+	const repoName = input.repoName.trim()
+	if (
+		!isArtifactsRemotePathPart(accountId) ||
+		!isArtifactsRemotePathPart(namespace) ||
+		!isArtifactsRemotePathPart(repoName)
+	) {
+		return null
+	}
+	const remote = `https://${accountId}.artifacts.cloudflare.net/git/${namespace}/${repoName}.git`
+	return isUsableArtifactsGitRemote(remote) ? remote : null
+}
+
 function isArtifactsAuthenticationError(error: unknown) {
 	if (error instanceof CloudflareApiError && error.status === 401) return true
 	return getErrorMessage(error) === 'Authentication error'
@@ -339,23 +373,32 @@ function wrapNativeCreateTokenError(error: unknown) {
 function adaptNativeRepoHandle(
 	repo: ArtifactsRepo,
 	restRepo?: ArtifactRepoHandle,
+	canonicalRemote?: string | null,
 ): ArtifactRepoHandle {
 	return {
 		info: async () => {
 			const nativeInfo = nativeRepoInfo(repo)
-			// binding get() already returned the git remote. REST info uses
+			// Prefer the binding remote only when listServerRefs can parse it.
+			// JSRPC can return a truthy non-URL identifier. REST info uses
 			// CLOUDFLARE_API_TOKEN, which is not an Artifacts credential on
-			// self-hosted deploys, and a 401 there used to hide this remote.
-			if (nativeInfo.remote) return nativeInfo
+			// self-hosted deploys, so a 401 there must not become the result.
+			if (isUsableArtifactsGitRemote(nativeInfo.remote)) return nativeInfo
+			let restError: unknown = null
 			if (restRepo) {
 				try {
 					const info = await restRepo.info()
-					if (info?.remote) return info
+					if (info?.remote && isUsableArtifactsGitRemote(info.remote)) {
+						return info
+					}
 				} catch (error) {
-					if (!isArtifactsAuthenticationError(error)) throw error
+					if (!isArtifactsAuthenticationError(error)) restError = error
 				}
 			}
-			return nativeInfo
+			if (canonicalRemote && isUsableArtifactsGitRemote(canonicalRemote)) {
+				return { ...nativeInfo, remote: canonicalRemote }
+			}
+			if (restError) throw restError
+			return { ...nativeInfo, remote: '' }
 		},
 		createToken: async (scope: 'write' | 'read' = 'write', ttl = 3600) => {
 			try {
@@ -394,29 +437,32 @@ function adaptNativeArtifactsBinding(
 	env: Env,
 ): ArtifactNamespaceBinding & Record<string, unknown> {
 	const rest = createArtifactsRestBinding(env, getArtifactsNamespace(env))
+	const adapt = (name: string, handle: ArtifactsRepo) =>
+		adaptNativeRepoHandle(
+			handle,
+			rest?.repo(name),
+			buildCanonicalArtifactsGitRemote({
+				accountId: env.CLOUDFLARE_ACCOUNT_ID ?? '',
+				namespace: getArtifactsNamespace(env),
+				repoName: name,
+			}),
+		)
 	const repo = (name: string): ArtifactRepoHandle => ({
 		info: async () => {
 			const handle = await getNativeRepoOrThrow(native, name)
-			return adaptNativeRepoHandle(handle, rest?.repo(name)).info()
+			return adapt(name, handle).info()
 		},
 		createToken: async (scope: 'write' | 'read' = 'write', ttl = 3600) => {
 			const handle = await getNativeRepoOrThrow(native, name)
-			return adaptNativeRepoHandle(handle, rest?.repo(name)).createToken(
-				scope,
-				ttl,
-			)
+			return adapt(name, handle).createToken(scope, ttl)
 		},
 		listTokens: async () => {
 			const handle = await getNativeRepoOrThrow(native, name)
-			return (
-				adaptNativeRepoHandle(handle, rest?.repo(name)).listTokens?.() ?? []
-			)
+			return adapt(name, handle).listTokens?.() ?? []
 		},
 		revokeToken: async (idOrPlaintext) => {
 			const handle = await getNativeRepoOrThrow(native, name)
-			await adaptNativeRepoHandle(handle, rest?.repo(name)).revokeToken?.(
-				idOrPlaintext,
-			)
+			await adapt(name, handle).revokeToken?.(idOrPlaintext)
 		},
 	})
 	return {
@@ -446,7 +492,7 @@ function adaptNativeArtifactsBinding(
 				const handle = await native.get(name)
 				return {
 					status: 'ready' as const,
-					repo: adaptNativeRepoHandle(handle, rest?.repo(name)),
+					repo: adapt(name, handle),
 				}
 			} catch (error) {
 				const code = artifactsBindingErrorCode(error)
