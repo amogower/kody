@@ -440,10 +440,12 @@ Optional Worker secrets/vars (see `packages/worker/src/env-schema.ts` and
   way.
 - `CLOUDFLARE_ARTIFACTS_API_TOKEN` — optional. When the Worker binds real
   `ARTIFACTS` but `CLOUDFLARE_API_BASE_URL` points at a mock (PR previews),
-  Artifacts createToken/fork REST uses this token against
-  `https://api.cloudflare.com` instead of the mock. Preview deploy syncs the
-  real deploy token here while `CLOUDFLARE_API_TOKEN` stays the mock credential
-  for email. Production leaves it unset and uses `CLOUDFLARE_API_TOKEN`.
+  Artifacts fork REST (and the native `createToken` JSRPC `split` fallback) uses
+  this token against `https://api.cloudflare.com` instead of the mock. Repo
+  `info()` and `createToken()` use the native binding when it is present.
+  Preview deploy syncs the real deploy token here while `CLOUDFLARE_API_TOKEN`
+  stays the mock credential for email. Production leaves it unset and uses
+  `CLOUDFLARE_API_TOKEN` for REST-only paths.
 - `USER_EMAIL_DOMAIN` — optional override for the user email domain (see
   `packages/worker/src/email/platform-address.ts`). Defaults to
   `inbox.<APP_BASE_URL hostname>` (for example `inbox.kody.codes`): every user
@@ -474,10 +476,12 @@ Optional Worker secrets/vars (see `packages/worker/src/env-schema.ts` and
   unset (local dev and tests). Wrangler sets `production` for production.
   Preview ensure rewrites the generated configs to the per-PR worker name
   (`kody-pr-<n>` / `kody-branch-<slug>`) so each preview has an isolated
-  Artifacts namespace. Production/preview also bind `ARTIFACTS` (JSRPC);
-  create/get prefer that binding and fall back to REST. New repo sessions
-  persist this value in D1 as `session_repo_namespace` so follow-up lookups
-  resolve the correct namespace even after env changes.
+  Artifacts namespace. Production/preview also bind `ARTIFACTS` (JSRPC). create,
+  get, info, and createToken prefer that binding. createToken falls back to REST
+  only when the binding still throws the JSRPC `split` error, and a REST 401
+  does not replace that native error. fork still uses REST when credentials
+  exist. New repo sessions persist this value in D1 as `session_repo_namespace`
+  so follow-up lookups resolve the correct namespace even after env changes.
 
 ## Disaster recovery (production Worker)
 

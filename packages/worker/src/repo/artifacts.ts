@@ -277,54 +277,101 @@ async function getNativeRepoOrThrow(native: Artifacts, name: string) {
 	}
 }
 
+function nativeRepoInfo(repo: ArtifactsRepo): ArtifactRepoInfo {
+	return {
+		id: repo.id,
+		name: repo.name,
+		description: repo.description,
+		defaultBranch: repo.defaultBranch,
+		createdAt: repo.createdAt,
+		updatedAt: repo.updatedAt,
+		lastPushAt: repo.lastPushAt,
+		source: repo.source,
+		readOnly: repo.readOnly,
+		remote: repo.remote,
+	}
+}
+
+function isArtifactsAuthenticationError(error: unknown) {
+	if (error instanceof CloudflareApiError && error.status === 401) return true
+	return getErrorMessage(error) === 'Authentication error'
+}
+
+/**
+ * #1442: native createToken threw inside the binding (`undefined.split`)
+ * across JSRPC, before plaintext/token mapping ran. That is the only case
+ * that still mints over REST. A rejected Worker API token must not replace
+ * this error.
+ */
+function isNativeCreateTokenJsrpcSplit(error: unknown) {
+	const message = getErrorMessage(error)
+	return (
+		message.includes('undefined.split') || message.includes("reading 'split'")
+	)
+}
+
+async function mintNativeArtifactToken(
+	repo: ArtifactsRepo,
+	scope: 'write' | 'read',
+	ttl: number,
+): Promise<ArtifactToken> {
+	const token = await repo.createToken(scope, ttl)
+	const plaintext = readArtifactTokenPlaintext(token)
+	return {
+		id: token.id,
+		plaintext,
+		scope: token.scope,
+		expiresAt: resolveCreatedTokenExpiry({
+			token: plaintext,
+			tokenExpiresAt:
+				typeof token.expiresAt === 'string' ? token.expiresAt : null,
+		}),
+	}
+}
+
+function wrapNativeCreateTokenError(error: unknown) {
+	return new Error(
+		`Artifacts native createToken failed: ${getErrorMessage(error)}`,
+		{ cause: error },
+	)
+}
+
 function adaptNativeRepoHandle(
 	repo: ArtifactsRepo,
 	restRepo?: ArtifactRepoHandle,
 ): ArtifactRepoHandle {
 	return {
 		info: async () => {
+			const nativeInfo = nativeRepoInfo(repo)
+			// binding get() already returned the git remote. REST info uses
+			// CLOUDFLARE_API_TOKEN, which is not an Artifacts credential on
+			// self-hosted deploys, and a 401 there used to hide this remote.
+			if (nativeInfo.remote) return nativeInfo
 			if (restRepo) {
-				const info = await restRepo.info()
-				if (info?.remote) return info
-			}
-			return {
-				id: repo.id,
-				name: repo.name,
-				description: repo.description,
-				defaultBranch: repo.defaultBranch,
-				createdAt: repo.createdAt,
-				updatedAt: repo.updatedAt,
-				lastPushAt: repo.lastPushAt,
-				source: repo.source,
-				readOnly: repo.readOnly,
-				remote: repo.remote,
-			}
-		},
-		createToken: async (scope = 'write', ttl = 3600) => {
-			// Native createToken still throws `undefined.split` across JSRPC
-			// after mapping plaintext/token. Mint via REST when credentials
-			// exist — that path worked before #1437 preferred the binding.
-			if (restRepo) {
-				return restRepo.createToken(scope, ttl)
-			}
-			try {
-				const token = await repo.createToken(scope, ttl)
-				const plaintext = readArtifactTokenPlaintext(token)
-				return {
-					id: token.id,
-					plaintext,
-					scope: token.scope,
-					expiresAt: resolveCreatedTokenExpiry({
-						token: plaintext,
-						tokenExpiresAt:
-							typeof token.expiresAt === 'string' ? token.expiresAt : null,
-					}),
+				try {
+					const info = await restRepo.info()
+					if (info?.remote) return info
+				} catch (error) {
+					if (!isArtifactsAuthenticationError(error)) throw error
 				}
+			}
+			return nativeInfo
+		},
+		createToken: async (scope: 'write' | 'read' = 'write', ttl = 3600) => {
+			try {
+				return await mintNativeArtifactToken(repo, scope, ttl)
 			} catch (error) {
-				throw new Error(
-					`Artifacts native createToken failed: ${getErrorMessage(error)}`,
-					{ cause: error },
-				)
+				if (!restRepo || !isNativeCreateTokenJsrpcSplit(error)) {
+					throw wrapNativeCreateTokenError(error)
+				}
+				try {
+					return await restRepo.createToken(scope, ttl)
+				} catch (restError) {
+					if (isArtifactsAuthenticationError(restError)) {
+						throw wrapNativeCreateTokenError(error)
+					}
+					throw restError
+				}
 			}
 		},
 		listTokens: async () => {
@@ -352,12 +399,12 @@ function adaptNativeArtifactsBinding(
 			const handle = await getNativeRepoOrThrow(native, name)
 			return adaptNativeRepoHandle(handle, rest?.repo(name)).info()
 		},
-		createToken: async (scope = 'write', ttl = 3600) => {
-			if (rest) {
-				return rest.repo(name).createToken(scope, ttl)
-			}
+		createToken: async (scope: 'write' | 'read' = 'write', ttl = 3600) => {
 			const handle = await getNativeRepoOrThrow(native, name)
-			return adaptNativeRepoHandle(handle).createToken(scope, ttl)
+			return adaptNativeRepoHandle(handle, rest?.repo(name)).createToken(
+				scope,
+				ttl,
+			)
 		},
 		listTokens: async () => {
 			const handle = await getNativeRepoOrThrow(native, name)
@@ -466,11 +513,13 @@ function createArtifactsRestBinding(env: Env, namespace: string) {
 	if (!accountId || !apiToken) {
 		return null
 	}
-	// When the Worker binds real Artifacts (production/preview), createToken
-	// and fork mint via REST. Preview also sets CLOUDFLARE_API_BASE_URL to a
-	// per-PR mock for email/analytics — that mock does not hold the binding's
-	// repos, so create vs restore disagreed (#2749). Prefer the real Cloudflare
-	// API whenever the native binding is present, using CLOUDFLARE_ARTIFACTS_API_TOKEN
+	// When the Worker binds real Artifacts (production/preview), fork still
+	// mints via REST. info() and createToken() on a native repo handle use
+	// the binding instead: CLOUDFLARE_API_TOKEN is not an Artifacts
+	// credential. Preview also sets CLOUDFLARE_API_BASE_URL to a per-PR mock
+	// for email/analytics — that mock does not hold the binding's repos, so
+	// create vs restore disagreed (#2749). Prefer the real Cloudflare API
+	// whenever the native binding is present, using CLOUDFLARE_ARTIFACTS_API_TOKEN
 	// when the shared CLOUDFLARE_API_TOKEN is the mock credential.
 	const native = readNativeArtifactsBinding(env)
 	const configuredBaseUrl = env.CLOUDFLARE_API_BASE_URL?.trim()

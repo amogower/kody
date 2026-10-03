@@ -334,6 +334,28 @@ test('artifacts REST client error paths and missing source repos', async () => {
 		/Artifacts API request failed \(500\)/,
 	)
 
+	const unauthorized = () =>
+		apiResponse(null, {
+			status: 401,
+			errors: [{ code: 10000, message: 'Authentication error' }],
+		})
+	mockFetch((method, url) =>
+		method === 'GET' && url.pathname.endsWith('/repos/repo-1')
+			? unauthorized()
+			: undefined,
+	)
+	await expect(
+		getArtifactsBinding(restEnv).repo('repo-1').info(),
+	).rejects.toThrow('Authentication error')
+	mockFetch((method, url) =>
+		method === 'POST' && url.pathname.endsWith('/tokens')
+			? unauthorized()
+			: undefined,
+	)
+	await expect(
+		getArtifactsBinding(restEnv).repo('repo-1').createToken('read', 120),
+	).rejects.toThrow('Authentication error')
+
 	const invalidTokenFetch = mockFetch((method, url) =>
 		method === 'POST' && url.pathname.endsWith('/repos')
 			? apiResponse(createdRepo('repo-1', 'art_v1_missing_expiry'))
@@ -432,7 +454,7 @@ test('resolveArtifactDefaultBranchHead reuses a provided token and still works w
 	expect(gitMocks.listServerRefs).toHaveBeenCalledTimes(2)
 })
 
-test('native createToken maps token when JSRPC omits plaintext and defers to REST tokens when both are configured', async () => {
+test('native createToken maps token when JSRPC omits plaintext and ignores a REST 401 when the binding is present', async () => {
 	const nativeCreateToken = vi.fn(
 		async (): Promise<{ id: string; scope: 'read'; token?: string }> => ({
 			id: 'tok_native',
@@ -440,13 +462,14 @@ test('native createToken maps token when JSRPC omits plaintext and defers to RES
 			scope: 'read',
 		}),
 	)
+	const nativeGet = vi.fn(async () =>
+		nativeRepoHandle('repo-1', { createToken: nativeCreateToken }),
+	)
 	const env = {
 		ARTIFACTS_NAMESPACE: 'production',
 		ARTIFACTS: {
 			create: vi.fn(),
-			get: vi.fn(async () =>
-				nativeRepoHandle('repo-1', { createToken: nativeCreateToken }),
-			),
+			get: nativeGet,
 			delete: vi.fn(),
 			list: vi.fn(async () => ({ repos: [], total: 0 })),
 		},
@@ -469,6 +492,73 @@ test('native createToken maps token when JSRPC omits plaintext and defers to RES
 		'Artifacts native createToken failed: Artifacts createToken result is missing plaintext.',
 	)
 
+	const restFetch = mockFetch(() =>
+		apiResponse(null, {
+			status: 401,
+			errors: [{ code: 10000, message: 'Authentication error' }],
+		}),
+	)
+	nativeCreateToken.mockClear()
+	const hybridBinding = getArtifactsBinding({
+		...env,
+		CLOUDFLARE_ACCOUNT_ID: 'acct',
+		CLOUDFLARE_API_TOKEN: 'worker-secret-rejected-by-artifacts',
+	} as unknown as Env)
+	const hybrid = await hybridBinding.get('repo-1')
+	if (hybrid.status !== 'ready') {
+		throw new Error('expected hybrid native repo to be ready')
+	}
+	await expect(hybrid.repo.info()).resolves.toMatchObject({
+		remote: remoteFor('repo-1', 'production'),
+	})
+	await expect(hybrid.repo.createToken('read', 120)).resolves.toEqual({
+		id: 'tok_native',
+		plaintext: 'art_v2_read?expires=1760000100',
+		scope: 'read',
+		expiresAt: '2025-10-09T08:55:00.000Z',
+	})
+	await expect(
+		hybridBinding.repo('repo-1').createToken('read', 120),
+	).resolves.toMatchObject({
+		plaintext: 'art_v2_read?expires=1760000100',
+	})
+	expect(nativeCreateToken).toHaveBeenCalledWith('read', 120)
+	expect(restFetch).not.toHaveBeenCalled()
+
+	nativeGet.mockResolvedValueOnce(
+		nativeRepoHandle('repo-1', {
+			createToken: nativeCreateToken,
+			remote: '',
+		}),
+	)
+	const missingRemote = await hybridBinding.get('repo-1')
+	if (missingRemote.status !== 'ready') {
+		throw new Error('expected native repo to be ready')
+	}
+	await expect(missingRemote.repo.info()).resolves.toMatchObject({
+		name: 'repo-1',
+		remote: '',
+	})
+	expect(restFetch).toHaveBeenCalledTimes(1)
+})
+
+test('native createToken falls back to REST only for the JSRPC split failure, and a REST 401 does not replace that error', async () => {
+	const nativeCreateToken = vi.fn(async () => {
+		throw new Error('binding unavailable')
+	})
+	const env = {
+		ARTIFACTS_NAMESPACE: 'production',
+		ARTIFACTS: {
+			create: vi.fn(),
+			get: vi.fn(async () =>
+				nativeRepoHandle('repo-1', { createToken: nativeCreateToken }),
+			),
+			delete: vi.fn(),
+			list: vi.fn(async () => ({ repos: [], total: 0 })),
+		},
+		CLOUDFLARE_ACCOUNT_ID: 'acct',
+		CLOUDFLARE_API_TOKEN: 'worker-secret',
+	} as unknown as Env
 	const restFetch = mockFetch((method, url) =>
 		method === 'POST' && url.pathname.endsWith('/tokens')
 			? apiResponse({
@@ -479,27 +569,78 @@ test('native createToken maps token when JSRPC omits plaintext and defers to RES
 				})
 			: undefined,
 	)
-	nativeCreateToken.mockClear()
-	const hybrid = await getArtifactsBinding({
-		...env,
-		CLOUDFLARE_ACCOUNT_ID: 'acct',
-		CLOUDFLARE_API_TOKEN: 'mock-email-token',
-		CLOUDFLARE_API_BASE_URL: 'https://kody-pr-42-mock-cloudflare.example',
-		CLOUDFLARE_ARTIFACTS_API_TOKEN: 'real-artifacts-token',
-	} as unknown as Env).get('repo-1')
-	if (hybrid.status !== 'ready') {
-		throw new Error('expected hybrid native repo to be ready')
+	const ready = await getArtifactsBinding(env).get('repo-1')
+	if (ready.status !== 'ready') {
+		throw new Error('expected native repo to be ready')
 	}
-	await expect(hybrid.repo.createToken('read', 120)).resolves.toEqual({
+	await expect(ready.repo.createToken('read', 120)).rejects.toThrow(
+		'Artifacts native createToken failed: binding unavailable',
+	)
+	expect(restFetch).not.toHaveBeenCalled()
+
+	nativeCreateToken.mockImplementation(async () => {
+		throw new Error("Cannot read properties of undefined (reading 'split')")
+	})
+	await expect(ready.repo.createToken('read', 120)).resolves.toEqual({
 		id: 'tok_rest',
 		plaintext: 'art_v1_rest?expires=1760000100',
 		scope: 'read',
 		expiresAt: '2026-10-09T08:55:00.000Z',
 	})
-	expect(nativeCreateToken).not.toHaveBeenCalled()
+	expect(nativeCreateToken).toHaveBeenCalledWith('read', 120)
 	expect(restFetch).toHaveBeenCalledTimes(1)
-	const restUrl = new URL(String(restFetch.mock.calls[0]?.[0]))
-	expect(restUrl.origin).toBe('https://api.cloudflare.com')
+
+	const denied = mockFetch(() =>
+		apiResponse(null, {
+			status: 401,
+			errors: [{ code: 10000, message: 'Authentication error' }],
+		}),
+	)
+	await expect(ready.repo.createToken('read', 120)).rejects.toThrow(
+		/Artifacts native createToken failed: Cannot read properties of undefined \(reading 'split'\)/,
+	)
+	expect(denied).toHaveBeenCalled()
+
+	const nonJson = mockFetch(
+		() =>
+			new Response('unauthorized', {
+				status: 401,
+				headers: { 'content-type': 'text/plain' },
+			}),
+	)
+	await expect(ready.repo.createToken('read', 120)).rejects.toThrow(
+		/Artifacts native createToken failed: Cannot read properties of undefined \(reading 'split'\)/,
+	)
+	expect(nonJson).toHaveBeenCalled()
+})
+
+test('fork keeps REST on api.cloudflare.com when preview points CLOUDFLARE_API_BASE_URL at a mock', async () => {
+	const restFetch = mockFetch((method, url) => {
+		expect(method).toBe('POST')
+		expect(url.origin).toBe('https://api.cloudflare.com')
+		expect(url.pathname).toContain('/repos/package-origin/fork')
+		return apiResponse(
+			createdRepo('package-dest', 'art_v1_fork?expires=1760000000'),
+		)
+	})
+	await expect(
+		getArtifactsBinding({
+			ARTIFACTS_NAMESPACE: 'production',
+			ARTIFACTS: {
+				create: vi.fn(),
+				get: vi.fn(),
+				delete: vi.fn(),
+				list: vi.fn(async () => ({ repos: [], total: 0 })),
+			},
+			CLOUDFLARE_ACCOUNT_ID: 'acct',
+			CLOUDFLARE_API_TOKEN: 'mock-email-token',
+			CLOUDFLARE_API_BASE_URL: 'https://kody-pr-42-mock-cloudflare.example',
+			CLOUDFLARE_ARTIFACTS_API_TOKEN: 'real-artifacts-token',
+		} as unknown as Env).fork('package-origin', 'package-dest'),
+	).resolves.toMatchObject({
+		name: 'package-dest',
+		token: 'art_v1_fork?expires=1760000000',
+	})
 	expect(restFetch.mock.calls[0]?.[1]).toMatchObject({
 		headers: expect.objectContaining({
 			authorization: 'Bearer real-artifacts-token',
