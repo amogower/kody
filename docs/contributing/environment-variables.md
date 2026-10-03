@@ -477,11 +477,15 @@ Optional Worker secrets/vars (see `packages/worker/src/env-schema.ts` and
   Preview ensure rewrites the generated configs to the per-PR worker name
   (`kody-pr-<n>` / `kody-branch-<slug>`) so each preview has an isolated
   Artifacts namespace. Production/preview also bind `ARTIFACTS` (JSRPC). create,
-  get, info, and createToken prefer that binding. createToken falls back to REST
-  only when the binding still throws the JSRPC `split` error, and a REST 401
-  does not replace that native error. fork still uses REST when credentials
-  exist. New repo sessions persist this value in D1 as `session_repo_namespace`
-  so follow-up lookups resolve the correct namespace even after env changes.
+  get, and createToken prefer that binding. `info()` uses the binding remote
+  when it is an https git URL (loopback http is kept too). A non-URL binding
+  remote uses REST when that returns a git URL, otherwise
+  `https://<account id>.artifacts.cloudflare.net/git/<namespace>/<repo>.git`. A
+  REST 401 does not become that result. createToken falls back to REST only when
+  the binding still throws the JSRPC `split` error, and a REST 401 does not
+  replace that native error. fork still uses REST when credentials exist. New
+  repo sessions persist this value in D1 as `session_repo_namespace` so
+  follow-up lookups resolve the correct namespace even after env changes.
 
 ## Disaster recovery (production Worker)
 
