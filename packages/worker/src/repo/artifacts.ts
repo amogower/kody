@@ -1013,6 +1013,7 @@ export async function resolveArtifactDefaultBranchHead(input: {
 	repo: ArtifactRepoHandle
 	token?: string
 	info?: ArtifactRepoInfo | null
+	publishedCommit?: string
 }) {
 	const [info, tokenPlaintext] = await Promise.all([
 		input.info === undefined ? input.repo.info() : Promise.resolve(input.info),
@@ -1026,7 +1027,8 @@ export async function resolveArtifactDefaultBranchHead(input: {
 	if (typeof tokenPlaintext !== 'string' || tokenPlaintext.length === 0) {
 		throw new Error('Artifacts createToken result is missing plaintext.')
 	}
-	const refName = `refs/heads/${info.defaultBranch || 'main'}`
+	const defaultBranch = info.defaultBranch || 'main'
+	const refName = `refs/heads/${defaultBranch}`
 	let refs: Awaited<ReturnType<typeof listArtifactServerRefs>>
 	try {
 		refs = await listArtifactServerRefs({
@@ -1034,6 +1036,34 @@ export async function resolveArtifactDefaultBranchHead(input: {
 			token: tokenPlaintext,
 			prefix: refName,
 		})
+		const branchRef = refs.find((ref) => ref.ref === refName)
+		if (branchRef?.oid) {
+			return {
+				remote: info.remote,
+				defaultBranch,
+				commit: branchRef.oid,
+			}
+		}
+		// A missing default-branch ref is not the same as a missing commit.
+		// Backup verification still succeeds when the published commit is the
+		// tip of another advertised branch.
+		const publishedCommit = input.publishedCommit?.trim() ?? ''
+		if (!isGitCommitOid(publishedCommit)) return null
+		const advertised = await listArtifactServerRefs({
+			remote: info.remote,
+			token: tokenPlaintext,
+		})
+		const branch = advertisedBranchForCommit({
+			refs: advertised,
+			commit: publishedCommit,
+			preferredBranch: defaultBranch,
+		})
+		if (!branch) return null
+		return {
+			remote: info.remote,
+			defaultBranch: branch,
+			commit: publishedCommit,
+		}
 	} catch (error) {
 		throw wrapArtifactsGitHttpError({
 			operation: 'listServerRefs',
@@ -1041,15 +1071,32 @@ export async function resolveArtifactDefaultBranchHead(input: {
 			error,
 		})
 	}
-	const branchRef = refs.find((ref) => ref.ref === refName)
-	if (!branchRef?.oid) {
-		return null
-	}
-	return {
-		remote: info.remote,
-		defaultBranch: info.defaultBranch || 'main',
-		commit: branchRef.oid,
-	}
+}
+
+function isGitCommitOid(value: string) {
+	return /^[0-9a-f]{40}$/i.test(value)
+}
+
+function advertisedBranchForCommit(input: {
+	refs: ReadonlyArray<{ ref: string; oid: string }>
+	commit: string
+	preferredBranch: string
+}) {
+	const wanted = input.commit.toLowerCase()
+	const heads = input.refs.filter(
+		(ref) =>
+			ref.oid.toLowerCase() === wanted && ref.ref.startsWith('refs/heads/'),
+	)
+	const preferred = heads.find(
+		(ref) => ref.ref === `refs/heads/${input.preferredBranch}`,
+	)
+	const nonSession = heads.find(
+		(ref) => !ref.ref.startsWith('refs/heads/sessions/'),
+	)
+	const chosen = preferred ?? nonSession ?? heads[0]
+	if (!chosen) return null
+	const branch = chosen.ref.slice('refs/heads/'.length)
+	return branch.length > 0 ? branch : null
 }
 
 export function isLoopbackHostname(hostname: string) {

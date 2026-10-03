@@ -414,9 +414,13 @@ export async function assertPublishedPackageSourceRepoHead(input: {
 				repo,
 				token: minted.plaintext,
 				info,
+				publishedCommit: input.source.published_commit,
 			})
 		} else {
-			head = await resolveArtifactDefaultBranchHead({ repo })
+			head = await resolveArtifactDefaultBranchHead({
+				repo,
+				publishedCommit: input.source.published_commit,
+			})
 		}
 	} catch (error) {
 		rethrowPublishedPackageSourceRepoArtifactsError({

@@ -318,6 +318,54 @@ test('package source overwrite and private-visibility changes require explicit c
 	).not.toThrow()
 })
 
+test('repoOpenSession verifies a published commit that is on the repo when the default branch has no HEAD', async () => {
+	const publishedCommit = '3a78682d73be790ea08ab07e2bd89b25d0504df8'
+	const source = packageSource({
+		id: '4eb55c7a-d00e-460c-b600-3b2eb993bac7',
+		repo_id: 'package-ad4ba4d4-9772-45b7-821c-67e170d5acd6',
+		published_commit: publishedCommit,
+	})
+	artifactsMock.resolveExistingArtifactSourceRepo.mockReset()
+	artifactsMock.resolveArtifactDefaultBranchHead.mockReset()
+	artifactsMock.resolveExistingArtifactSourceRepo.mockResolvedValue({
+		info: vi.fn(),
+		createToken: vi.fn(),
+	})
+	artifactsMock.resolveArtifactDefaultBranchHead.mockResolvedValueOnce(null)
+
+	await expect(
+		assertPublishedPackageSourceRepoHead({
+			env: {} as Env,
+			source,
+			operation: 'repoOpenSession',
+			requirePublishedCommitHead: true,
+		}),
+	).rejects.toThrow(/default branch has no HEAD/)
+	expect(artifactsMock.resolveArtifactDefaultBranchHead).toHaveBeenCalledWith(
+		expect.objectContaining({ publishedCommit }),
+	)
+
+	artifactsMock.resolveArtifactDefaultBranchHead.mockResolvedValueOnce({
+		remote:
+			'https://acct.artifacts.cloudflare.net/git/production/package-ad4ba4d4-9772-45b7-821c-67e170d5acd6.git',
+		defaultBranch: 'release',
+		commit: publishedCommit,
+	})
+	await expect(
+		assertPublishedPackageSourceRepoHead({
+			env: {} as Env,
+			source,
+			operation: 'repoOpenSession',
+			requirePublishedCommitHead: true,
+		}),
+	).resolves.toMatchObject({
+		sourceId: source.id,
+		publishedCommit,
+		commit: publishedCommit,
+		defaultBranch: 'release',
+	})
+})
+
 test('restorable package source snapshot verification rejects corrupt snapshots and accepts manifest-bearing backups', async () => {
 	const assertRestorable = (env: Env, operation: string) =>
 		assertRestorablePackageSourceSnapshot({

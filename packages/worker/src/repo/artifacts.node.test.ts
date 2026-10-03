@@ -454,6 +454,70 @@ test('resolveArtifactDefaultBranchHead reuses a provided token and still works w
 	expect(gitMocks.listServerRefs).toHaveBeenCalledTimes(2)
 })
 
+test('resolveArtifactDefaultBranchHead accepts a published commit on another branch when the default branch has no HEAD', async () => {
+	const publishedCommit = '3a78682d73be790ea08ab07e2bd89b25d0504df8'
+	const remote = remoteFor('package-ad4ba4d4-9772-45b7-821c-67e170d5acd6')
+	const info = vi.fn(async () => ({
+		id: 'package_ad4ba4d4',
+		name: 'package-ad4ba4d4-9772-45b7-821c-67e170d5acd6',
+		description: null,
+		defaultBranch: 'main',
+		createdAt: '2026-04-17T00:00:00.000Z',
+		updatedAt: '2026-04-17T00:00:00.000Z',
+		lastPushAt: null,
+		source: null,
+		readOnly: false,
+		remote,
+	}))
+	const createToken = vi.fn<ArtifactRepoHandle['createToken']>(async () => ({
+		id: 'tok_read',
+		plaintext: 'art_v1_throwaway',
+		scope: 'read',
+		expiresAt: '2026-10-09T08:55:00.000Z',
+	}))
+	const repo = { info, createToken }
+	gitMocks.listServerRefs.mockReset()
+	gitMocks.listServerRefs.mockResolvedValueOnce([]).mockResolvedValueOnce([
+		{ ref: 'refs/heads/sessions/old', oid: publishedCommit },
+		{ ref: 'refs/heads/release', oid: publishedCommit },
+		{ ref: 'refs/tags/v1', oid: publishedCommit },
+	])
+
+	await expect(
+		resolveArtifactDefaultBranchHead({
+			repo,
+			publishedCommit,
+		}),
+	).resolves.toEqual({
+		remote,
+		defaultBranch: 'release',
+		commit: publishedCommit,
+	})
+	expect(gitMocks.listServerRefs).toHaveBeenNthCalledWith(
+		1,
+		expect.objectContaining({ prefix: 'refs/heads/main' }),
+	)
+	expect(gitMocks.listServerRefs).toHaveBeenNthCalledWith(
+		2,
+		expect.objectContaining({ prefix: undefined }),
+	)
+
+	gitMocks.listServerRefs.mockReset()
+	gitMocks.listServerRefs.mockResolvedValueOnce([]).mockResolvedValueOnce([
+		{
+			ref: 'refs/heads/release',
+			oid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+		},
+	])
+	await expect(
+		resolveArtifactDefaultBranchHead({
+			repo,
+			publishedCommit,
+		}),
+	).resolves.toBeNull()
+	expect(gitMocks.listServerRefs).toHaveBeenCalledTimes(2)
+})
+
 test('native createToken maps token when JSRPC omits plaintext and ignores a REST 401 when the binding is present', async () => {
 	const nativeCreateToken = vi.fn(
 		async (): Promise<{ id: string; scope: 'read'; token?: string }> => ({
