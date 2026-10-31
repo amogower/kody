@@ -1,13 +1,9 @@
 name: Publish MCP Registry
 
+# MANUAL ONLY. Do not add a push, pull_request, or schedule trigger.
+# Publishing server.json to the MCP Registry is a public release.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - server.json
-      - .github/workflows/publish-mcp-registry.yml
 
 permissions:
   contents: read

@@ -1,4 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises'
+import { isExecutedDirectly } from '../node-runtime.ts'
 import {
 	ensureArtifactsAccountEventSubscription,
 	ensureCloudflareQueue,
@@ -34,6 +35,69 @@ type Command = 'ensure'
 // on deploy. The kody-email-delivery queue consumer stays, because that queue
 // exists. Andrew: turn this on only to start Email Sending delivery events.
 const ensureEmailDeliveryEventSubscription = false
+
+const namedProductionOverrideKeys = [
+	'APP_BASE_URL',
+	'CLOUDFLARE_ACCOUNT_ID',
+	'USER_EMAIL_DOMAIN',
+	'SYSTEM_EMAIL_DOMAIN',
+] as const
+
+function isProductionOverrideKey(key: string) {
+	return (
+		(namedProductionOverrideKeys as ReadonlyArray<string>).includes(key) ||
+		key.includes('_LEGACY_') ||
+		key.startsWith('LEGACY_')
+	)
+}
+
+/**
+ * Refuse a non-empty process env value that would replace a committed
+ * production var with something else. Empty values are not overrides.
+ * `ALLOW_ENV_VAR_OVERRIDE=1` is the explicit opt-out.
+ */
+export function assertProductionEnvOverridesMatchCommitted(input: {
+	committedVars: Record<string, unknown>
+	env: NodeJS.ProcessEnv
+}) {
+	if (input.env.ALLOW_ENV_VAR_OVERRIDE === '1') return
+	const mismatches: Array<string> = []
+	for (const [key, raw] of Object.entries(input.env)) {
+		if (!isProductionOverrideKey(key)) continue
+		if (typeof raw !== 'string') continue
+		const override = raw.trim()
+		if (!override) continue
+		const committedRaw = input.committedVars[key]
+		const committed =
+			typeof committedRaw === 'string' ? committedRaw.trim() : ''
+		if (override !== committed) {
+			mismatches.push(
+				`${key} is ${JSON.stringify(override)} but committed env.production.vars.${key} is ${committed ? JSON.stringify(committed) : 'unset'}`,
+			)
+		}
+	}
+	if (mismatches.length === 0) return
+	throw new Error(
+		[
+			'Refusing production env overrides that differ from the committed wrangler config.',
+			'Set ALLOW_ENV_VAR_OVERRIDE=1 to apply them anyway.',
+			...mismatches,
+		].join('\n'),
+	)
+}
+
+async function readCommittedProductionVars(wranglerConfigPath: string) {
+	const config = parseJsonc<Record<string, unknown>>(
+		await readFile(wranglerConfigPath, 'utf8'),
+	)
+	const env = config.env
+	if (!env || typeof env !== 'object') return {}
+	const production = (env as Record<string, unknown>).production
+	if (!production || typeof production !== 'object') return {}
+	const vars = (production as Record<string, unknown>).vars
+	if (!vars || typeof vars !== 'object' || Array.isArray(vars)) return {}
+	return vars as Record<string, unknown>
+}
 
 type CliOptions = {
 	wranglerConfigPath: string
@@ -748,6 +812,13 @@ async function ensureProductionResources(options: CliOptions) {
 		`Origin production deploy state: ${deployPlan.mode} (${deployPlan.originEntry} entry${deployPlan.runOriginBootstrap ? ', bootstrap then transfer' : ''}). ${deployPlan.reason}`,
 	)
 
+	assertProductionEnvOverridesMatchCommitted({
+		committedVars: await readCommittedProductionVars(
+			options.wranglerConfigPath,
+		),
+		env: process.env,
+	})
+
 	const generatedConfigPath = await writeGeneratedWranglerConfig({
 		baseConfigPath: options.wranglerConfigPath,
 		outConfigPath: options.outConfigPath,
@@ -908,4 +979,6 @@ async function main() {
 	}
 }
 
-await main()
+if (isExecutedDirectly(import.meta.url)) {
+	await main()
+}
