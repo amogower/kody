@@ -1,15 +1,9 @@
 name: 🔎 Preview
 
+# MANUAL ONLY. Do not add a pull_request, pull_request_target, push, or
+# workflow_run trigger. Deploy and cleanup both change Cloudflare. Dispatch
+# this workflow by hand.
 on:
-  pull_request:
-    branches:
-      - main
-    types:
-      - opened
-      - reopened
-      - synchronize
-      - ready_for_review
-      - closed
   workflow_dispatch:
     inputs:
       action:
@@ -58,13 +52,7 @@ jobs:
         preview-${{ github.event.pull_request.number || inputs.pr_number ||
         github.run_id }}
       url: ${{ steps.deploy_preview.outputs.url }}
-    if: >-
-      (github.event_name == 'pull_request' &&
-        github.event.action != 'closed' &&
-        github.event.pull_request.head.repo.fork == false &&
-        github.event.pull_request.draft == false) ||
-      (github.event_name == 'workflow_dispatch' &&
-        inputs.action == 'deploy')
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v6.0.2
@@ -873,12 +861,7 @@ jobs:
     permissions:
       contents: read
       deployments: write
-    if: >-
-      (github.event_name == 'pull_request' &&
-        github.event.action == 'closed' &&
-        github.event.pull_request.head.repo.fork == false) ||
-      (github.event_name == 'workflow_dispatch' &&
-        inputs.action == 'cleanup')
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'cleanup'
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v6.0.2
