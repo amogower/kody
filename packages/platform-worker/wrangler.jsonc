@@ -8,6 +8,7 @@
 	// pre-bundled generated modules resolve identically to the
 	// origin Worker.
 	"name": "kody-platform",
+	"account_id": "333b7db000c936f7b7e633a84b600780",
 	// Birthday Week 2026-10-01: pending I/O (service bindings, DO RPC/fetch,
 	// waitUntil, timers, container.monitor()) keeps a DO from idle eviction
 	// for up to 15 minutes per operation with no connected client. Date
@@ -230,20 +231,24 @@
 				{
 					"binding": "APP_DB",
 					"database_name": "kody",
+					"database_id": "05b109c7-835e-4c14-828a-da02bfe0370f",
 					"migrations_dir": "./../worker/migrations",
 				},
 				{
 					"binding": "AUDIT_DB",
 					"database_name": "kody-audit",
+					"database_id": "6fdea4ab-8377-40ff-a61d-9b544c00ff74",
 					"migrations_dir": "./../worker/audit-migrations",
 				},
 			],
 			"kv_namespaces": [
 				{
 					"binding": "OAUTH_KV",
+					"id": "3614445cf9ef43929b3e57640e938a70",
 				},
 				{
 					"binding": "BUNDLE_ARTIFACTS_KV",
+					"id": "c86573e5403642c9945a8c90291d5d83",
 				},
 			],
 			"r2_buckets": [
@@ -344,7 +349,24 @@
 			"vars": {
 				"SENTRY_ENVIRONMENT": "production",
 				"SENTRY_TRACES_SAMPLE_RATE": 0,
+				"APP_BASE_URL": "https://b4sed.codes",
+				"CLOUDFLARE_ACCOUNT_ID": "333b7db000c936f7b7e633a84b600780",
 				"ARTIFACTS_NAMESPACE": "production",
+				"PACKAGE_APP_BASE_URL": "https://b4sed.run",
+				"USER_EMAIL_DOMAIN": "inbox.b4sed.codes",
+				"SYSTEM_EMAIL_DOMAIN": "b4sed.codes",
+				"FATHOM_SITE_ID": "",
+				"YOUTUBE_ALLOWED_PLAYLIST_IDS": "PLV5CVI1eNcJhP4nrJt85L7PxHjebFpDfY",
+				"STRIPE_PRO_PRICE_ID": "price_1UChg1LAQpAnsYszAYn6eGgt",
+				"STRIPE_PRO_YEARLY_PRICE_ID": "price_1UChg2LAQpAnsYszKAFCR778",
+				"STRIPE_STANDARD_PRICE_ID": "price_1U3sg6LAQpAnsYszGeL2nc8O",
+				"STRIPE_STANDARD_YEARLY_PRICE_ID": "price_1U3sg6LAQpAnsYszqq9abwIY",
+				"STRIPE_BILLING_PORTAL_CONFIGURATION_ID": "bpc_1UBzc8LAQpAnsYszyBkO2N3F",
+				"DR_EXPORT_ENABLED": "",
+				"DR_BACKUP_ACCOUNT_ID": "",
+				"DR_BACKUP_BUCKET_NAME": "",
+				"BACKUP_MANIFEST_SIGNING_KEY_ID": "",
+				"BACKUP_MANIFEST_VERIFYING_PUBLIC_KEY_SPKI_BASE64": "",
 			},
 		},
 		"preview": {

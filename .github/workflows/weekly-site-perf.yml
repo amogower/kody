@@ -12,7 +12,7 @@ permissions:
 jobs:
   measure:
     runs-on: ubuntu-latest
-    name: ⏱ Measure kody.codes
+    name: ⏱ Measure b4sed.codes
     timeout-minutes: 10
     steps:
       - name: 📦 Checkout
@@ -27,7 +27,7 @@ jobs:
 
       - name: 📏 Collect
         run: >
-          node tools/site-perf/collect.ts --url https://kody.codes/ --json
+          node tools/site-perf/collect.ts --url https://b4sed.codes/ --json
           --exit-zero > site-perf-report.json
 
       - name: 📎 Upload report

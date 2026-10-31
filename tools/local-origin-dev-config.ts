@@ -43,6 +43,17 @@ function asRecord(value: unknown): JsonRecord {
 	return value && typeof value === 'object' ? (value as JsonRecord) : {}
 }
 
+function localDevVars(base: JsonRecord, vars: Record<string, string>) {
+	const merged: JsonRecord = { ...base, ...vars }
+	// A committed production APP_BASE_URL / account id must not become the
+	// local dev default. The overlay sets them only when the process env does.
+	if (!Object.hasOwn(vars, 'APP_BASE_URL')) delete merged.APP_BASE_URL
+	if (!Object.hasOwn(vars, 'CLOUDFLARE_ACCOUNT_ID')) {
+		delete merged.CLOUDFLARE_ACCOUNT_ID
+	}
+	return merged
+}
+
 export async function writeLocalOriginDevConfig({
 	originConfigPath,
 	envName,
@@ -63,14 +74,11 @@ export async function writeLocalOriginDevConfig({
 		throw new Error(`${originConfigPath} is missing "env.${envName}".`)
 	}
 	const envRecord = originEnv as JsonRecord
-	envRecord.vars = {
-		...asRecord(envRecord.vars),
-		...vars,
-	}
-	config.vars = {
-		...asRecord(config.vars),
-		...vars,
-	}
+	// Production custom-domain routes must not become the local request host.
+	delete config.routes
+	delete envRecord.routes
+	envRecord.vars = localDevVars(asRecord(envRecord.vars), vars)
+	config.vars = localDevVars(asRecord(config.vars), vars)
 
 	const outputPath = path.join(
 		path.dirname(originConfigPath),

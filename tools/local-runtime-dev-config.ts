@@ -39,6 +39,11 @@ export async function writeLocalRuntimeDevConfig({
 	}
 	const envRecord = runtimeEnv as JsonRecord
 
+	// Production zone routes (b4sed.run) must not become the local request
+	// host. Wrangler resolves dev URLs against the first configured route.
+	delete config.routes
+	delete envRecord.routes
+
 	// Pin the registered dev name to the committed worker name so the main
 	// config's `service`/`script_name` references to "kody-runtime" resolve.
 	envRecord.name = config.name

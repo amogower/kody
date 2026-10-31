@@ -30,6 +30,11 @@ import {
 
 type Command = 'ensure'
 
+// Live B4SED has no kody-email-delivery-events subscription. Do not create it
+// on deploy. The kody-email-delivery queue consumer stays, because that queue
+// exists. Andrew: turn this on only to start Email Sending delivery events.
+const ensureEmailDeliveryEventSubscription = false
+
 type CliOptions = {
 	wranglerConfigPath: string
 	outConfigPath: string
@@ -595,10 +600,13 @@ async function ensureProductionResources(options: CliOptions) {
 	const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim()
 	const apiToken = process.env.CLOUDFLARE_API_TOKEN?.trim()
 	const zoneId = process.env.CLOUDFLARE_ZONE_ID?.trim()
-	if ((!accountId || !apiToken || !zoneId) && !options.dryRun) {
+	if ((!accountId || !apiToken) && !options.dryRun) {
 		fail(
-			'Missing CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID, or CLOUDFLARE_API_TOKEN for Queue provisioning.',
+			'Missing CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN for Queue provisioning.',
 		)
+	}
+	if (ensureEmailDeliveryEventSubscription && !zoneId && !options.dryRun) {
+		fail('Missing CLOUDFLARE_ZONE_ID for the Email Sending event subscription.')
 	}
 	const queueClient = {
 		accountId: accountId ?? 'dry-run-account',
@@ -679,19 +687,24 @@ async function ensureProductionResources(options: CliOptions) {
 		name: bindings.webhookDispatchDeadLetterQueueName,
 		existingQueues,
 	})
-	const emailSendingDomain = resolveEmailSendingDomain({
-		dryRun: options.dryRun,
-		committedUserEmailDomain: bindings.committedUserEmailDomain,
-	})
-	const emailEventSubscription = await ensureEmailSendingEventSubscription({
-		accountId: accountId ?? 'dry-run-account',
-		apiToken: apiToken ?? 'dry-run-token',
-		name: truncateWithSuffix(bindings.workerName, '-email-delivery-events', 63),
-		queueId: emailDeliveryQueue.id,
-		domain: emailSendingDomain,
-		zoneId: zoneId ?? 'dry-run-zone',
-		dryRun: options.dryRun,
-	})
+	const emailEventSubscription = ensureEmailDeliveryEventSubscription
+		? await ensureEmailSendingEventSubscription({
+				accountId: accountId ?? 'dry-run-account',
+				apiToken: apiToken ?? 'dry-run-token',
+				name: truncateWithSuffix(
+					bindings.workerName,
+					'-email-delivery-events',
+					63,
+				),
+				queueId: emailDeliveryQueue.id,
+				domain: resolveEmailSendingDomain({
+					dryRun: options.dryRun,
+					committedUserEmailDomain: bindings.committedUserEmailDomain,
+				}),
+				zoneId: zoneId ?? 'dry-run-zone',
+				dryRun: options.dryRun,
+			})
+		: null
 	const artifactsEventSubscription =
 		await ensureArtifactsAccountEventSubscription({
 			accountId: accountId ?? 'dry-run-account',
@@ -872,7 +885,9 @@ async function ensureProductionResources(options: CliOptions) {
 	console.log(
 		`package_events_dispatch_dead_letter_queue_name=${packageEventsDispatchDeadLetterQueue.name}`,
 	)
-	console.log(`email_event_subscription_id=${emailEventSubscription.id}`)
+	console.log(
+		`email_event_subscription_id=${emailEventSubscription?.id ?? 'skipped'}`,
+	)
 	console.log(
 		`artifacts_event_subscription_id=${artifactsEventSubscription.id}`,
 	)

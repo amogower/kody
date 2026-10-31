@@ -1,5 +1,7 @@
 name: DR secret escrow
 
+# Not part of B4SED's deploy path. Dispatch is a no-op so this cannot seal
+# a secret into a DR bucket. The script stays in the repo.
 on:
   workflow_dispatch:
 
@@ -9,6 +11,7 @@ permissions:
 jobs:
   seal-escrow:
     name: Seal SECRET_STORE_KEY into DR backup bucket
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -3,6 +3,7 @@
 	// Syntax-highlight worker: Shiki lives only here. Origin reaches it
 	// through the HIGHLIGHT service binding (no public hostname).
 	"name": "kody-highlight",
+	"account_id": "333b7db000c936f7b7e633a84b600780",
 	"main": "./src/index.ts",
 	"compatibility_date": "2026-04-16",
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],

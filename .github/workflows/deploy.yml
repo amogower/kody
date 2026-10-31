@@ -1,13 +1,11 @@
 name: 🚀 Deploy (production)
 
+# MANUAL ONLY. Do not add a push or workflow_run trigger.
+# This used to run after Validate succeeded on main and would upload all nine
+# workers, including kody-production-d1-backups into a DR account. Dispatch
+# from main deploys only the five live B4SED workers: kody-production,
+# kody-platform, kody-runtime, kody-jobs, and kody-highlight.
 on:
-  workflow_run:
-    workflows:
-      - '✅ Validate'
-    types:
-      - completed
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -18,9 +16,6 @@ permissions:
 # Queue rather than cancel: the job runs D1 migrations before the worker
 # uploads and deploys platform before runtime, so cancelling mid-sequence
 # leaves new schema with old code or mismatched Durable Object bindings.
-# GitHub keeps at most one pending run per group and replaces it with a newer
-# one; that is intended, because the job only ever deploys `main` HEAD, so a
-# superseded pending run would have been a no-op.
 concurrency:
   group: deploy-production
   cancel-in-progress: false
@@ -30,12 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     name: 🧾 Production deploy guard
     timeout-minutes: 4
-    if: >-
-      (github.event_name == 'workflow_run' &&
-        github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.head_branch == 'main' &&
-        github.event.workflow_run.event == 'push') ||
-      (github.event_name == 'workflow_dispatch' && github.ref_name == 'main')
+    if: github.event_name == 'workflow_dispatch' && github.ref_name == 'main'
     outputs:
       deploy_sha: ${{ steps.sha_guard.outputs.deploy_sha }}
       should_deploy: ${{ steps.sha_guard.outputs.should_deploy }}
@@ -44,39 +34,24 @@ jobs:
       deploy_runtime: ${{ steps.sha_guard.outputs.deploy_runtime }}
       deploy_jobs: ${{ steps.sha_guard.outputs.deploy_jobs }}
       deploy_highlight: ${{ steps.sha_guard.outputs.deploy_highlight }}
-      deploy_backup_control_plane:
-        ${{ steps.sha_guard.outputs.deploy_backup_control_plane }}
-      deploy_status_worker: ${{ steps.sha_guard.outputs.deploy_status_worker }}
-      deploy_api_worker: ${{ steps.sha_guard.outputs.deploy_api_worker }}
-      deploy_api_docs_worker:
-        ${{ steps.sha_guard.outputs.deploy_api_docs_worker }}
-      deploy_nx_cache_worker:
-        ${{ steps.sha_guard.outputs.deploy_nx_cache_worker }}
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v6.0.2
         with:
-          ref:
-            ${{ github.event_name == 'workflow_dispatch' && github.sha ||
-            github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: 🧾 Resolve deploy SHA and ensure it is main HEAD
         id: sha_guard
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
           WORKFLOW_DISPATCH_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          DEPLOY_SHA="$WORKFLOW_RUN_SHA"
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            DEPLOY_SHA="$WORKFLOW_DISPATCH_SHA"
-          fi
+          DEPLOY_SHA="$WORKFLOW_DISPATCH_SHA"
 
           if [ -z "$DEPLOY_SHA" ]; then
-            echo "Unable to resolve deploy SHA for event: $EVENT_NAME" >&2
+            echo "Unable to resolve deploy SHA for workflow_dispatch." >&2
             exit 1
           fi
 
@@ -90,122 +65,20 @@ jobs:
             echo "deploy_runtime=false" >> "$GITHUB_OUTPUT"
             echo "deploy_jobs=false" >> "$GITHUB_OUTPUT"
             echo "deploy_highlight=false" >> "$GITHUB_OUTPUT"
-            echo "deploy_backup_control_plane=false" >> "$GITHUB_OUTPUT"
-            echo "deploy_status_worker=false" >> "$GITHUB_OUTPUT"
-            echo "deploy_api_worker=false" >> "$GITHUB_OUTPUT"
-            echo "deploy_api_docs_worker=false" >> "$GITHUB_OUTPUT"
-            echo "deploy_nx_cache_worker=false" >> "$GITHUB_OUTPUT"
             echo "Skipping deploy: target SHA is not current main HEAD."
             echo "target=$DEPLOY_SHA"
             echo "head=$HEAD_SHA"
             exit 0
           fi
           echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+          echo "deploy_main=true" >> "$GITHUB_OUTPUT"
+          echo "deploy_platform=true" >> "$GITHUB_OUTPUT"
+          echo "deploy_runtime=true" >> "$GITHUB_OUTPUT"
+          echo "deploy_jobs=true" >> "$GITHUB_OUTPUT"
+          echo "deploy_highlight=true" >> "$GITHUB_OUTPUT"
+          echo "Deploying the five live B4SED workers only."
+          echo "Not deployed: kody-api, kody-api-docs, kody-status, kody-nx-cache, kody-production-d1-backups."
 
-          # Always redeploy the DR control plane and status worker on manual
-          # workflow_dispatch. On push-driven deploys, path-filter against a
-          # short ancestor window (not tip^..tip alone): a cancelled Validate
-          # on an intermediate main commit (e.g. squash-merge raced by the
-          # next merge) would otherwise skip optional workers forever, because
-          # the later tip's single-commit diff no longer lists those paths
-          # even though the tip tree contains them (#2436 seal window after
-          # #2438).
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "deploy_main=true" >> "$GITHUB_OUTPUT"
-            echo "deploy_platform=true" >> "$GITHUB_OUTPUT"
-            echo "deploy_runtime=true" >> "$GITHUB_OUTPUT"
-            echo "deploy_jobs=true" >> "$GITHUB_OUTPUT"
-            echo "deploy_highlight=true" >> "$GITHUB_OUTPUT"
-            echo "deploy_backup_control_plane=true" >> "$GITHUB_OUTPUT"
-            echo "deploy_status_worker=true" >> "$GITHUB_OUTPUT"
-            echo "deploy_api_worker=true" >> "$GITHUB_OUTPUT"
-            echo "deploy_api_docs_worker=true" >> "$GITHUB_OUTPUT"
-            echo "deploy_nx_cache_worker=true" >> "$GITHUB_OUTPUT"
-            echo "Backup control plane deploy: forced (workflow_dispatch)."
-            echo "Status worker deploy: forced (workflow_dispatch)."
-            echo "API worker deploy: forced (workflow_dispatch)."
-            echo "API docs worker deploy: forced (workflow_dispatch)."
-            echo "Nx cache worker deploy: forced (workflow_dispatch)."
-            exit 0
-          fi
-
-          PATH_FILTER_LOOKBACK=15
-          if git rev-parse --verify "${DEPLOY_SHA}~${PATH_FILTER_LOOKBACK}" >/dev/null 2>&1; then
-            PATH_FILTER_BASE="${DEPLOY_SHA}~${PATH_FILTER_LOOKBACK}"
-          else
-            PATH_FILTER_BASE="$(git rev-list --max-parents=0 -n1 "${DEPLOY_SHA}")"
-          fi
-          echo "Path filter range: ${PATH_FILTER_BASE}..${DEPLOY_SHA}"
-
-          # Union of paths touched by any commit in the window (not tip-tree
-          # net diff). An A→B→A revert still lists the path so production is
-          # forced back onto the tip binary.
-          PATH_FILTER_LIST="$(mktemp)"
-          git log --name-only --pretty=format: "${PATH_FILTER_BASE}..${DEPLOY_SHA}" |
-            sed '/^$/d' |
-            sort -u >"$PATH_FILTER_LIST"
-          echo "Path filter paths ($(wc -l <"$PATH_FILTER_LIST") unique):"
-          head -n 40 "$PATH_FILTER_LIST"
-
-          node tools/ci/deploy-path-filter.ts <"$PATH_FILTER_LIST" | tee -a "$GITHUB_OUTPUT"
-
-          if grep -E \
-            '^(\.github/workflows/deploy\.yml|tools/ci/backup-resources|packages/backup-control-plane/|packages/shared/src/backup-)' \
-            "$PATH_FILTER_LIST" >/dev/null; then
-            echo "deploy_backup_control_plane=true" >> "$GITHUB_OUTPUT"
-            echo "Backup control plane deploy: path filter matched."
-          else
-            echo "deploy_backup_control_plane=false" >> "$GITHUB_OUTPUT"
-            echo "Backup control plane deploy: skipped (no relevant path changes)."
-          fi
-
-          if grep -E \
-            '^(\.github/workflows/deploy\.yml|packages/status/)' \
-            "$PATH_FILTER_LIST" >/dev/null; then
-            echo "deploy_status_worker=true" >> "$GITHUB_OUTPUT"
-            echo "Status worker deploy: path filter matched."
-          else
-            echo "deploy_status_worker=false" >> "$GITHUB_OUTPUT"
-            echo "Status worker deploy: skipped (no relevant path changes)."
-          fi
-
-          if grep -E \
-            '^(\.github/workflows/deploy\.yml|packages/api-worker/|packages/shared/src/(api-token-format|base64)\.ts$)' \
-            "$PATH_FILTER_LIST" >/dev/null; then
-            echo "deploy_api_worker=true" >> "$GITHUB_OUTPUT"
-            echo "API worker deploy: path filter matched."
-          else
-            echo "deploy_api_worker=false" >> "$GITHUB_OUTPUT"
-            echo "API worker deploy: skipped (no relevant path changes)."
-          fi
-
-          if grep -E \
-            '^(\.github/workflows/deploy\.yml|packages/api-docs-worker/)' \
-            "$PATH_FILTER_LIST" >/dev/null; then
-            echo "deploy_api_docs_worker=true" >> "$GITHUB_OUTPUT"
-            echo "API docs worker deploy: path filter matched."
-          else
-            echo "deploy_api_docs_worker=false" >> "$GITHUB_OUTPUT"
-            echo "API docs worker deploy: skipped (no relevant path changes)."
-          fi
-
-          # Do not treat deploy.yml itself as an nx-cache change. Runtime
-          # token / secret wiring edits would otherwise upload this worker
-          # and a 10000 auth miss blocks the rest of the production deploy.
-          if grep -E \
-            '^(\.github/workflows/nx-cache-deploy\.yml|tools/ci/nx-cache-resources|packages/nx-cache/)' \
-            "$PATH_FILTER_LIST" >/dev/null; then
-            echo "deploy_nx_cache_worker=true" >> "$GITHUB_OUTPUT"
-            echo "Nx cache worker deploy: path filter matched."
-          else
-            echo "deploy_nx_cache_worker=false" >> "$GITHUB_OUTPUT"
-            echo "Nx cache worker deploy: skipped (no relevant path changes)."
-          fi
-          rm -f "$PATH_FILTER_LIST"
-
-  # The jobs worker deploys before origin so origin's JOBS service binding
-  # can validate against an existing jobs-worker script. See
-  # docs/contributing/architecture/jobs-worker-migration-runbook.md.
   deploy-highlight-worker:
     runs-on: ubuntu-latest
     name: 🎨 Deploy highlight worker
@@ -235,7 +108,7 @@ jobs:
       - name: ☁️ Deploy highlight worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: '333b7db000c936f7b7e633a84b600780'
           DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
         run: |
           set -euo pipefail
@@ -329,7 +202,7 @@ jobs:
         id: jobs_resources
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: '333b7db000c936f7b7e633a84b600780'
         run: |
           set -euo pipefail
           node tools/ci/jobs-worker-resources.ts ensure --env production --out-config packages/jobs-worker/wrangler-production.generated.json | tee -a "$GITHUB_OUTPUT"
@@ -337,7 +210,7 @@ jobs:
       - name: 🗄️ Apply D1 Migrations (jobs)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: '333b7db000c936f7b7e633a84b600780'
           WRANGLER_CONFIG:
             ${{ steps.jobs_resources.outputs.jobs_wrangler_config }}
         run: |
@@ -346,7 +219,7 @@ jobs:
       - name: 🔐 Sync jobs worker secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: '333b7db000c936f7b7e633a84b600780'
           WRANGLER_CONFIG:
             ${{ steps.jobs_resources.outputs.jobs_wrangler_config }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
@@ -367,7 +240,7 @@ jobs:
       - name: ☁️ Deploy jobs worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: '333b7db000c936f7b7e633a84b600780'
           DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
           WRANGLER_CONFIG:
             ${{ steps.jobs_resources.outputs.jobs_wrangler_config }}
@@ -478,19 +351,10 @@ jobs:
         id: resources
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
-          # Legacy app hostnames kept attached (and optionally redirected)
-          # during a domain migration; see tools/ci/resource-utils.ts.
-          APP_LEGACY_HOSTS: ${{ vars.APP_LEGACY_HOSTS }}
-          APP_LEGACY_REDIRECT: ${{ vars.APP_LEGACY_REDIRECT }}
-          PACKAGE_APP_LEGACY_HOSTS: ${{ vars.PACKAGE_APP_LEGACY_HOSTS }}
-          PACKAGE_APP_LEGACY_REDIRECT: ${{ vars.PACKAGE_APP_LEGACY_REDIRECT }}
-          USER_EMAIL_DOMAIN: ${{ vars.USER_EMAIL_DOMAIN }}
-          SYSTEM_EMAIL_DOMAIN: ${{ vars.SYSTEM_EMAIL_DOMAIN }}
-          LEGACY_USER_EMAIL_DOMAINS: ${{ vars.LEGACY_USER_EMAIL_DOMAINS }}
-          LEGACY_SYSTEM_EMAIL_DOMAINS: ${{ vars.LEGACY_SYSTEM_EMAIL_DOMAINS }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          APP_BASE_URL: https://b4sed.codes
+          USER_EMAIL_DOMAIN: inbox.b4sed.codes
+          SYSTEM_EMAIL_DOMAIN: b4sed.codes
+          CLOUDFLARE_ACCOUNT_ID: '333b7db000c936f7b7e633a84b600780'
         run: |
           set -euo pipefail
           node tools/ci/production-resources.ts ensure --out-config packages/worker/wrangler-production.generated.json | tee -a "$GITHUB_OUTPUT"
@@ -871,7 +735,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ENV: production
-          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          APP_BASE_URL: https://b4sed.codes
           DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
           APP_DEPLOY_INFO: ${{ steps.deploy_info.outputs.app_deploy_info }}
           WRANGLER_CONFIG: ${{ steps.resources.outputs.wrangler_config }}
@@ -1176,420 +1040,3 @@ jobs:
             payload="$(jq -nc --argjson cursor "$cursor" '{phases:["capabilities"],cursor:$cursor}')"
             sweep=$((sweep + 1))
           done
-
-  deploy-status-worker:
-    runs-on: ubuntu-latest
-    name: 📟 Deploy status worker
-    timeout-minutes: 8
-    # Deploys after the main worker so the status prober never probes a
-    # production worker that predates the endpoints it expects (for example
-    # /health/components), which would open spurious incidents.
-    needs:
-      - sha-guard
-      - deploy
-    # always() is required: `deploy` itself uses always() so it can run
-    # after skipped jobs/highlight siblings. Without always() here, GitHub
-    # skips this job whenever those siblings were skipped — even when the
-    # path filter set deploy_status_worker=true (see #2143: guard matched
-    # packages/status/ but this job never started).
-    if: >-
-      always() && !cancelled() && needs.sha-guard.result == 'success' &&
-      needs.deploy.result == 'success' && needs.sha-guard.outputs.should_deploy
-      == 'true' && needs.sha-guard.outputs.deploy_status_worker == 'true'
-    environment:
-      name: production
-      url: https://status.kody.codes
-    steps:
-      - name: 📦 Checkout
-        uses: actions/checkout@v6.0.2
-        with:
-          ref: ${{ needs.sha-guard.outputs.deploy_sha }}
-          fetch-depth: 0
-
-      - name: 🟢 Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 26
-          cache: npm
-
-      - name: 📥 Install Dependencies
-        run: npm ci
-
-      - name: ☁️ Deploy status worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
-        run: |
-          set -euo pipefail
-
-          deploy_attempts=3
-          deploy_delay_seconds=10
-          for attempt in $(seq 1 "$deploy_attempts"); do
-            echo "Status worker deploy attempt $attempt/$deploy_attempts"
-            set +e
-            npm run status:deploy -- \
-              --var "BUILD_COMMIT:${DEPLOY_COMMIT_SHA}" 2>&1 | tee status-deploy.log
-            deploy_status="${PIPESTATUS[0]}"
-            set -e
-            if [ "$deploy_status" -eq 0 ]; then
-              break
-            fi
-            if [ "$attempt" -eq "$deploy_attempts" ]; then
-              echo "Status worker deploy failed after $deploy_attempts attempts." >&2
-              exit "$deploy_status"
-            fi
-            echo "Retrying in ${deploy_delay_seconds}s."
-            sleep "$deploy_delay_seconds"
-            deploy_delay_seconds=$((deploy_delay_seconds * 2))
-          done
-
-      - name: 🔐 Sync status worker alert email secret
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          # The status worker sends alert email through the Cloudflare Email
-          # REST API using the same account token the deploy uses.
-          printf '%s' "$CLOUDFLARE_API_TOKEN" | npx wrangler secret put \
-            CLOUDFLARE_API_TOKEN --config packages/status/wrangler.jsonc
-
-      - name: 🔐 Sync status incident event secret
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          STATUS_INCIDENT_EVENT_SECRET:
-            ${{ secrets.STATUS_INCIDENT_EVENT_SECRET }}
-        run: |
-          set -euo pipefail
-          if [ -z "${STATUS_INCIDENT_EVENT_SECRET:-}" ]; then
-            echo "STATUS_INCIDENT_EVENT_SECRET unset; deleting the status-worker secret if present so emit cannot keep using a retired token."
-            npx wrangler secret delete STATUS_INCIDENT_EVENT_SECRET \
-              --config packages/status/wrangler.jsonc || true
-            exit 0
-          fi
-          printf '%s' "$STATUS_INCIDENT_EVENT_SECRET" | npx wrangler secret put \
-            STATUS_INCIDENT_EVENT_SECRET --config packages/status/wrangler.jsonc
-
-      - name: 🩺 Healthcheck (status worker)
-        shell: bash
-        env:
-          EXPECTED_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
-        run: |
-          set -euo pipefail
-          HEALTHCHECK_URL="https://status.kody.codes/health"
-
-          attempts=20
-          delay_seconds=3
-          for i in $(seq 1 "$attempts"); do
-            echo "Attempt $i/$attempts"
-            echo "Healthcheck URL: $HEALTHCHECK_URL"
-            if curl --fail --silent --show-error --max-time 10 \
-              --header "Accept: application/json" \
-              "$HEALTHCHECK_URL" > status-health.json && \
-              node -e "const fs = require('node:fs'); const json = JSON.parse(fs.readFileSync('status-health.json','utf8')); const expected = process.env.EXPECTED_COMMIT_SHA; if (json?.ok !== true) { console.error('status-healthcheck-unexpected-response', json); process.exit(1); } if (json?.commit !== expected) { console.error('status-healthcheck-unexpected-commit', { expected, actual: json?.commit }); process.exit(1); } console.log('status-healthcheck-ok', json);"; then
-              exit 0
-            fi
-            sleep "$delay_seconds"
-          done
-
-          echo "Status worker healthcheck failed after ${attempts} attempts." >&2
-          if [ -f status-health.json ]; then
-            echo "Last response body:" >&2
-            cat status-health.json >&2
-          fi
-          exit 1
-
-  deploy-api-worker:
-    runs-on: ubuntu-latest
-    name: 🔌 Deploy API worker (api.kody.codes)
-    timeout-minutes: 8
-    # The KODY_API service binding targets the origin's KodyApi entrypoint,
-    # so this deploys after origin. `deploy` may be skipped when only the
-    # edge worker changed; the binding then targets the live origin.
-    needs:
-      - sha-guard
-      - deploy
-    if: >-
-      always() && !cancelled() && needs.sha-guard.result == 'success' &&
-      needs.sha-guard.outputs.should_deploy == 'true' &&
-      needs.sha-guard.outputs.deploy_api_worker == 'true' &&
-      (needs.deploy.result == 'success' || needs.deploy.result == 'skipped')
-    environment:
-      name: production
-      url: https://api.kody.codes
-    steps:
-      - name: 📦 Checkout
-        uses: actions/checkout@v6.0.2
-        with:
-          ref: ${{ needs.sha-guard.outputs.deploy_sha }}
-          fetch-depth: 0
-
-      - name: 🟢 Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 26
-          cache: npm
-
-      - name: 📥 Install Dependencies
-        run: npm ci
-
-      - name: ☁️ Deploy API worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
-        run: |
-          set -euo pipefail
-
-          deploy_attempts=3
-          deploy_delay_seconds=10
-          for attempt in $(seq 1 "$deploy_attempts"); do
-            echo "API worker deploy attempt $attempt/$deploy_attempts"
-            set +e
-            # Explicit --name: without it wrangler appends the environment
-            # to the script name (kody-api-production).
-            node ./wrangler-env.ts deploy \
-              --config packages/api-worker/wrangler.jsonc \
-              --name kody-api \
-              --env production \
-              --var "APP_COMMIT_SHA:${DEPLOY_COMMIT_SHA}" 2>&1 | tee api-deploy.log
-            deploy_status="${PIPESTATUS[0]}"
-            set -e
-            if [ "$deploy_status" -eq 0 ]; then
-              break
-            fi
-            if [ "$attempt" -eq "$deploy_attempts" ]; then
-              echo "API worker deploy failed after $deploy_attempts attempts." >&2
-              exit "$deploy_status"
-            fi
-            echo "Retrying in ${deploy_delay_seconds}s."
-            sleep "$deploy_delay_seconds"
-            deploy_delay_seconds=$((deploy_delay_seconds * 2))
-          done
-
-      - name: 🩺 Healthcheck (API worker)
-        shell: bash
-        env:
-          EXPECTED_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
-        run: |
-          set -euo pipefail
-          API_URL="https://api.kody.codes"
-
-          # A brand-new custom domain can take a few minutes for DNS and the
-          # edge certificate, so this waits longer than the other workers.
-          attempts=40
-          delay_seconds=6
-          for i in $(seq 1 "$attempts"); do
-            echo "Attempt $i/$attempts"
-            if curl --fail --silent --show-error --max-time 10 \
-              --header "Accept: application/json" \
-              "$API_URL/health" > api-health.json && \
-              node -e "const fs = require('node:fs'); const json = JSON.parse(fs.readFileSync('api-health.json','utf8')); const expected = process.env.EXPECTED_COMMIT_SHA; if (json?.ok !== true || json?.commit !== expected) { console.error('api-healthcheck-unexpected-response', { expected, json }); process.exit(1); } console.log('api-healthcheck-ok', json);" && \
-              curl --fail --silent --show-error --max-time 20 \
-                --header "Accept: application/json" \
-                "$API_URL/openapi.json" > api-openapi.json && \
-              node -e "const fs = require('node:fs'); const json = JSON.parse(fs.readFileSync('api-openapi.json','utf8')); if (!json?.openapi?.startsWith('3.') || !json?.paths?.['/v1/capability-proxy/session']) { console.error('api-openapi-unexpected-response', Object.keys(json ?? {})); process.exit(1); } console.log('api-openapi-ok', json.openapi, Object.keys(json.paths).length, 'paths');"; then
-              exit 0
-            fi
-            sleep "$delay_seconds"
-          done
-
-          echo "API worker healthcheck failed after ${attempts} attempts." >&2
-          if [ -f api-health.json ]; then
-            echo "Last health body:" >&2
-            cat api-health.json >&2
-          fi
-          exit 1
-
-  deploy-api-docs-worker:
-    runs-on: ubuntu-latest
-    name: 📚 Deploy API docs worker (api-docs.kody.codes)
-    timeout-minutes: 8
-    # Independent of origin: docs fetch the live OpenAPI JSON over HTTPS.
-    # Deploys after the API worker when that job ran, so a brand-new API
-    # hostname is live before docs proxy it; skipped API deploys are fine.
-    needs:
-      - sha-guard
-      - deploy-api-worker
-    if: >-
-      always() && !cancelled() && needs.sha-guard.result == 'success' &&
-      needs.sha-guard.outputs.should_deploy == 'true' &&
-      needs.sha-guard.outputs.deploy_api_docs_worker == 'true' &&
-      (needs.deploy-api-worker.result == 'success' ||
-        needs.deploy-api-worker.result == 'skipped')
-    environment:
-      name: production
-      url: https://api-docs.kody.codes
-    steps:
-      - name: 📦 Checkout
-        uses: actions/checkout@v6.0.2
-        with:
-          ref: ${{ needs.sha-guard.outputs.deploy_sha }}
-          fetch-depth: 0
-
-      - name: 🟢 Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 26
-          cache: npm
-
-      - name: 📥 Install Dependencies
-        run: npm ci
-
-      - name: ☁️ Deploy API docs worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
-        run: |
-          set -euo pipefail
-
-          deploy_attempts=3
-          deploy_delay_seconds=10
-          for attempt in $(seq 1 "$deploy_attempts"); do
-            echo "API docs worker deploy attempt $attempt/$deploy_attempts"
-            set +e
-            node ./wrangler-env.ts deploy \
-              --config packages/api-docs-worker/wrangler.jsonc \
-              --name kody-api-docs \
-              --var "APP_COMMIT_SHA:${DEPLOY_COMMIT_SHA}" 2>&1 | tee api-docs-deploy.log
-            deploy_status="${PIPESTATUS[0]}"
-            set -e
-            if [ "$deploy_status" -eq 0 ]; then
-              break
-            fi
-            if [ "$attempt" -eq "$deploy_attempts" ]; then
-              echo "API docs worker deploy failed after $deploy_attempts attempts." >&2
-              exit "$deploy_status"
-            fi
-            echo "Retrying in ${deploy_delay_seconds}s."
-            sleep "$deploy_delay_seconds"
-            deploy_delay_seconds=$((deploy_delay_seconds * 2))
-          done
-
-      - name: 🩺 Healthcheck (API docs worker)
-        shell: bash
-        env:
-          EXPECTED_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
-        run: |
-          set -euo pipefail
-          DOCS_URL="https://api-docs.kody.codes"
-
-          # Custom domain DNS + cert can take a few minutes on first deploy.
-          attempts=40
-          delay_seconds=6
-          for i in $(seq 1 "$attempts"); do
-            echo "Attempt $i/$attempts"
-            if curl --fail --silent --show-error --max-time 10 \
-              --header "Accept: application/json" \
-              "$DOCS_URL/health" > api-docs-health.json && \
-              node -e "const fs = require('node:fs'); const json = JSON.parse(fs.readFileSync('api-docs-health.json','utf8')); const expected = process.env.EXPECTED_COMMIT_SHA; if (json?.ok !== true || json?.commit !== expected) { console.error('api-docs-healthcheck-unexpected-response', { expected, json }); process.exit(1); } console.log('api-docs-healthcheck-ok', json);" && \
-              curl --fail --silent --show-error --max-time 20 \
-              "$DOCS_URL/" > api-docs-index.html && \
-              node -e "const fs = require('node:fs'); const html = fs.readFileSync('api-docs-index.html','utf8'); if (!html.includes('api-reference') || !html.includes('/openapi.json')) { console.error('api-docs-html-unexpected'); process.exit(1); } console.log('api-docs-html-ok', html.length);" && \
-              curl --fail --silent --show-error --max-time 20 \
-                --header "Accept: application/json" \
-                "$DOCS_URL/openapi.json" > api-docs-openapi.json && \
-              node -e "const fs = require('node:fs'); const json = JSON.parse(fs.readFileSync('api-docs-openapi.json','utf8')); if (!json?.openapi?.startsWith('3.') || !json?.info?.title) { console.error('api-docs-openapi-unexpected-response', Object.keys(json ?? {})); process.exit(1); } console.log('api-docs-openapi-ok', json.openapi, json.info.title);"; then
-              exit 0
-            fi
-            sleep "$delay_seconds"
-          done
-
-          echo "API docs worker healthcheck failed after ${attempts} attempts." >&2
-          if [ -f api-docs-health.json ]; then
-            echo "Last health body:" >&2
-            cat api-docs-health.json >&2
-          fi
-          exit 1
-
-  deploy-backup-control-plane:
-    runs-on: ubuntu-latest
-    name: 🛟 Deploy DR backup control plane
-    timeout-minutes: 8
-    needs: sha-guard
-    if: >-
-      needs.sha-guard.outputs.should_deploy == 'true' &&
-      needs.sha-guard.outputs.deploy_backup_control_plane == 'true'
-    environment:
-      name: production
-      url: https://kody-dr.kentcdodds.com
-    steps:
-      - name: 📦 Checkout
-        uses: actions/checkout@v6.0.2
-        with:
-          ref: ${{ needs.sha-guard.outputs.deploy_sha }}
-          fetch-depth: 0
-
-      - name: 🟢 Setup Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: 26
-          cache: npm
-
-      - name: 📥 Install Dependencies
-        run: npm ci
-
-      - name: 🔒 Reconcile DR backup retention policies when authorized
-        env:
-          DR_BACKUP_ADMIN_TOKEN: ${{ secrets.DR_BACKUP_ADMIN_TOKEN }}
-          BACKUP_SOURCE_ACCOUNT_ID: a99ee2e72728dd52902ef288b7b1447d
-          BACKUP_DESTINATION_ACCOUNT_ID: ${{ secrets.DR_BACKUP_ACCOUNT_ID }}
-          BACKUP_R2_BUCKET_NAME: kody-production-backups
-          BACKUP_WORKER_NAME: kody-production-d1-backups
-          BACKUP_SOURCE_D1_ALLOWLIST: >-
-            [{"uuid":"8c1014d1-6b41-4695-a0a2-159071f0f919","name":"kody"}]
-        run: node tools/ci/backup-resources-reconcile-cli.ts
-
-      - name: ☁️ Deploy backup control plane to DR account
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.DR_DEPLOY_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.DR_BACKUP_ACCOUNT_ID }}
-          DEPLOY_COMMIT_SHA: ${{ needs.sha-guard.outputs.deploy_sha }}
-        run: |
-          set -euo pipefail
-          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-            echo "Missing GitHub Actions secret DR_DEPLOY_TOKEN." >&2
-            echo "Create an API token in the DR (KCD) Cloudflare account with" >&2
-            echo "Workers Scripts Edit, Workers Scripts Read, Workers Tail Read," >&2
-            echo "Account Workers Scripts Edit, and Workflows Edit, then add it" >&2
-            echo "as repository secret DR_DEPLOY_TOKEN." >&2
-            exit 1
-          fi
-          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-            echo "Missing GitHub Actions secret DR_BACKUP_ACCOUNT_ID." >&2
-            exit 1
-          fi
-
-          deploy_attempts=3
-          deploy_delay_seconds=10
-          for attempt in $(seq 1 "$deploy_attempts"); do
-            echo "DR control-plane deploy attempt $attempt/$deploy_attempts"
-            set +e
-            npm run backup:deploy -- \
-              --var "BUILD_COMMIT:${DEPLOY_COMMIT_SHA}" 2>&1 | tee backup-deploy.log
-            deploy_status="${PIPESTATUS[0]}"
-            set -e
-            if [ "$deploy_status" -eq 0 ]; then
-              exit 0
-            fi
-            if [ "$attempt" -eq "$deploy_attempts" ]; then
-              echo "DR control-plane deploy failed after $deploy_attempts attempts." >&2
-              exit "$deploy_status"
-            fi
-            echo "Retrying in ${deploy_delay_seconds}s."
-            sleep "$deploy_delay_seconds"
-            deploy_delay_seconds=$((deploy_delay_seconds * 2))
-          done
-
-  deploy-nx-cache-worker:
-    needs: sha-guard
-    if: >-
-      needs.sha-guard.outputs.should_deploy == 'true' &&
-      needs.sha-guard.outputs.deploy_nx_cache_worker == 'true'
-    uses: ./.github/workflows/nx-cache-deploy.yml
-    secrets: inherit
-    with:
-      sha: ${{ needs.sha-guard.outputs.deploy_sha }}
