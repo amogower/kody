@@ -94,13 +94,19 @@ binding, then add the `deleted_classes` migration and its
 (error 10074). A first preview deploy can apply the create and delete tags
 together so they elide.
 
-`PackageServiceInstance` is gone from production `kody-runtime` (tag `v2`; no
-stub export). Preview applies `v1` `new_sqlite_classes` then `v2`
-`deleted_classes` on first deploy so create and delete elide.
+B4SED live `kody-runtime` is at migration tag `v1` and never exported
+`PackageServiceInstance`. Production migrations in
+`packages/runtime-worker/wrangler.jsonc` stop at that `v1` tag (top-level
+`migrations`, which `env.production` inherits). Do not append `deleted_classes`
+for `PackageServiceInstance`: Cloudflare rejects it with error 10074 because the
+previous script version did not export the class. Upstream kody applied tag `v2`
+after exporting a stub; this account did not. Preview still applies `v1`
+`new_sqlite_classes` then `v2` `deleted_classes` on a fresh script so create and
+delete elide.
 
 Wrangler 4.131+ runs `getDurableObjectClassNameToUseSQLiteMap` on real
 `wrangler deploy`, not only dry-run, and that map ignores `transferred_classes`.
 The production `v1` tag therefore also lists
-`new_sqlite_classes: ["PackageServiceInstance"]` so the local map can apply
-`v2`. Do not treat that annotation as a new create: remote `kody-runtime` is
-already at tag `v2`, so wrangler does not re-upload `v1`.
+`new_sqlite_classes: ["PackageServiceInstance"]`. Keep that list. It is part of
+the applied v1 tag, not a new create, and it is not a `deleted_classes` step.
+Remote `kody-runtime` is already at tag `v1`, so wrangler does not re-upload it.

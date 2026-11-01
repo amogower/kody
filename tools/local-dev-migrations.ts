@@ -12,7 +12,10 @@ type JsonRecord = Record<string, unknown>
  * elided: creating them only to delete them trips the same check when the
  * script no longer exports the class.
  */
-export function localizeMigrations(migrations: unknown): unknown {
+export function localizeMigrations(
+	migrations: unknown,
+	extraElidedClasses?: Iterable<string>,
+): unknown {
 	if (!Array.isArray(migrations)) return migrations
 
 	const converted = migrations.map((migration) => {
@@ -21,16 +24,22 @@ export function localizeMigrations(migrations: unknown): unknown {
 		const transferred = record.transferred_classes
 		if (!Array.isArray(transferred)) return record
 		delete record.transferred_classes
+		const existing = Array.isArray(record.new_sqlite_classes)
+			? (record.new_sqlite_classes as Array<unknown>)
+			: []
+		const existingNames = new Set(
+			existing.filter((name): name is string => typeof name === 'string'),
+		)
 		const created = transferred
 			.map((entry) =>
 				entry && typeof entry === 'object'
 					? (entry as JsonRecord).to
 					: undefined,
 			)
-			.filter((name): name is string => typeof name === 'string')
-		const existing = Array.isArray(record.new_sqlite_classes)
-			? (record.new_sqlite_classes as Array<unknown>)
-			: []
+			.filter(
+				(name): name is string =>
+					typeof name === 'string' && !existingNames.has(name),
+			)
 		record.new_sqlite_classes = [...existing, ...created]
 		return record
 	})
@@ -43,6 +52,9 @@ export function localizeMigrations(migrations: unknown): unknown {
 		for (const name of classes) {
 			if (typeof name === 'string') deleted.add(name)
 		}
+	}
+	if (extraElidedClasses) {
+		for (const name of extraElidedClasses) deleted.add(name)
 	}
 
 	const localized: Array<unknown> = []
