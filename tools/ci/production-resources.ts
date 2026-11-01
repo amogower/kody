@@ -618,7 +618,16 @@ async function resolveProductionBindings({
 	return resolved
 }
 
-async function ensureProductionResources(options: CliOptions) {
+export async function ensureProductionResources(options: CliOptions) {
+	// Before any ensure step or Cloudflare call. A mismatched env used to
+	// log package-app DNS ensures and only then throw.
+	assertProductionEnvOverridesMatchCommitted({
+		committedVars: await readCommittedProductionVars(
+			options.wranglerConfigPath,
+		),
+		env: process.env,
+	})
+
 	const bindings = await resolveProductionBindings({
 		wranglerConfigPath: options.wranglerConfigPath,
 		kvTitleOverride: options.kvTitleOverride,
@@ -811,13 +820,6 @@ async function ensureProductionResources(options: CliOptions) {
 	console.error(
 		`Origin production deploy state: ${deployPlan.mode} (${deployPlan.originEntry} entry${deployPlan.runOriginBootstrap ? ', bootstrap then transfer' : ''}). ${deployPlan.reason}`,
 	)
-
-	assertProductionEnvOverridesMatchCommitted({
-		committedVars: await readCommittedProductionVars(
-			options.wranglerConfigPath,
-		),
-		env: process.env,
-	})
 
 	const generatedConfigPath = await writeGeneratedWranglerConfig({
 		baseConfigPath: options.wranglerConfigPath,
