@@ -20,7 +20,9 @@ test('accepted terminal persists repair, alarm repairs D1, and replay never rese
 	const userId = uniqueUserId('provider-repair')
 	const messageId = 'provider-repair-message'
 	const providerMessageId = 'provider-repair-id'
-	const acceptedAt = '2026-08-03T00:00:00.000Z'
+	// Retention drops delivery events older than 90 days during alarm().
+	// Keep this inside that window so the pass does not delete the fixture.
+	const acceptedAt = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 	const mailbox = rpcFor(userId)
 	await mailbox.upsertMessageGraph({
 		ownerId: userId,
