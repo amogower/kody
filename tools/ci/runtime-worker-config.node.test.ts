@@ -4,7 +4,11 @@ import path from 'node:path'
 import { expect, test } from 'vitest'
 import { consoleError } from '#worker/test-support/console-spies.ts'
 
-import { generate } from './runtime-worker-config.ts'
+import {
+	b4sedCloudflareAccountId,
+	generate,
+	migrationsForRuntimeDeploy,
+} from './runtime-worker-config.ts'
 import { parseJsonc } from './resource-utils.ts'
 
 const runtimeBaseConfigPath = 'packages/runtime-worker/wrangler.jsonc'
@@ -21,11 +25,19 @@ type EnvConfig = {
 	routes?: unknown
 	workers_dev?: boolean
 	vars?: Record<string, unknown>
+	migrations?: Array<Migration>
+}
+type Migration = {
+	tag?: string
+	transferred_classes?: unknown
+	new_sqlite_classes?: Array<string>
+	deleted_classes?: Array<string>
 }
 type WorkerConfig = {
 	name?: string
+	account_id?: string
 	env?: Record<string, EnvConfig>
-	migrations?: Array<{ tag?: string; transferred_classes?: unknown }>
+	migrations?: Array<Migration>
 }
 
 function byName(env: EnvConfig | undefined, name: string) {
@@ -168,6 +180,7 @@ async function generateRuntime(input: {
 	workerPrefix: string
 	mainWorkerName: string
 	mainVars?: Record<string, unknown>
+	mutateBase?: (config: WorkerConfig) => void
 }) {
 	consoleError.mockImplementation(() => {})
 	const tempDir = await mkdtemp(path.join(os.tmpdir(), 'kody-runtime-config-'))
@@ -176,6 +189,15 @@ async function generateRuntime(input: {
 		Object.assign(mainConfig.env[input.envName]?.vars ?? {}, input.mainVars)
 		const mainConfigPath = path.join(tempDir, 'main.generated.json')
 		await writeFile(mainConfigPath, JSON.stringify(mainConfig))
+		let baseConfigPath = runtimeBaseConfigPath
+		if (input.mutateBase) {
+			const baseConfig = parseJsonc<WorkerConfig>(
+				await readFile(runtimeBaseConfigPath, 'utf8'),
+			)
+			input.mutateBase(baseConfig)
+			baseConfigPath = path.join(tempDir, 'base.json')
+			await writeFile(baseConfigPath, JSON.stringify(baseConfig))
+		}
 		const outConfigPath = path.join(tempDir, 'runtime.generated.json')
 		await generate({
 			envName: input.envName,
@@ -183,7 +205,7 @@ async function generateRuntime(input: {
 			runtimeWorkerName: `${input.workerPrefix}-runtime`,
 			platformWorkerName: `${input.workerPrefix}-platform`,
 			mainWorkerName: input.mainWorkerName,
-			baseConfigPath: runtimeBaseConfigPath,
+			baseConfigPath,
 			outConfigPath,
 		})
 		const read = async (filePath: string) =>
@@ -276,8 +298,10 @@ test('generate publishes the package-app custom domain for production', async ()
 	expect(runtime.env?.production?.routes).toEqual(packageAppRoutes)
 	expect(runtime.env?.production?.name).toBe('kody-runtime')
 	expect(runtime.env?.production?.workers_dev).toBe(true)
-	// The storage transfer migration survives generation untouched.
-	expect(runtime.migrations?.[0]?.tag).toBe('v1')
+	// The storage transfer migration survives generation. Production is v1
+	// only: B4SED live kody-runtime never exported PackageServiceInstance.
+	expect(runtime.migrations?.map((migration) => migration.tag)).toEqual(['v1'])
+	expect(runtime.migrations?.[0]?.deleted_classes).toBeUndefined()
 	expect(Array.isArray(runtime.migrations?.[0]?.transferred_classes)).toBe(true)
 })
 
@@ -302,4 +326,135 @@ test('generate keeps a GitHub PACKAGE_APP_LEGACY_HOSTS overlay on runtime zone r
 		{ pattern: 'legacy-apps.example.org/*', zone_name: 'example.org' },
 		{ pattern: '*.legacy-apps.example.org/*', zone_name: 'example.org' },
 	])
+})
+
+const v1SqliteAnnotation = ['PackageServiceInstance']
+const v2Delete = {
+	tag: 'v2',
+	deleted_classes: ['PackageServiceInstance'],
+}
+
+function productionMigrations(config: WorkerConfig) {
+	return config.env?.production?.migrations ?? config.migrations
+}
+
+test('B4SED production runtime migrations are exactly v1 with no deleted classes', async () => {
+	const source = parseJsonc<WorkerConfig>(
+		await readFile(runtimeBaseConfigPath, 'utf8'),
+	)
+	expect(source.account_id).toBe(b4sedCloudflareAccountId)
+	expect(source.env?.production?.vars?.CLOUDFLARE_ACCOUNT_ID).toBe(
+		b4sedCloudflareAccountId,
+	)
+	// env.production inherits top-level migrations. That list is the one
+	// `wrangler deploy --env production` uploads.
+	expect(source.env?.production?.migrations).toBeUndefined()
+	const committed = productionMigrations(source)
+	expect(committed?.map((migration) => migration.tag)).toEqual(['v1'])
+	expect(committed?.some((migration) => migration.deleted_classes)).toBe(false)
+	expect(committed?.[0]?.new_sqlite_classes).toEqual(v1SqliteAnnotation)
+	expect(committed?.[0]?.transferred_classes).toEqual([
+		{ from: 'StorageRunner', from_script: 'kody', to: 'StorageRunner' },
+		{ from: 'RunLog', from_script: 'kody', to: 'RunLog' },
+		{
+			from: 'PackageRealtimeSession',
+			from_script: 'kody',
+			to: 'PackageRealtimeSession',
+		},
+		{
+			from: 'PackageServiceInstance',
+			from_script: 'kody',
+			to: 'PackageServiceInstance',
+		},
+	])
+	// Fresh preview scripts still create the class and delete it together.
+	expect(source.env?.preview?.migrations?.[1]).toEqual(v2Delete)
+
+	const { runtime } = await generateRuntime({
+		envName: 'production',
+		workerPrefix: 'kody',
+		mainWorkerName: 'kody-production',
+	})
+	expect(runtime.migrations?.map((migration) => migration.tag)).toEqual(['v1'])
+	expect(
+		runtime.migrations?.some((migration) => migration.deleted_classes),
+	).toBe(false)
+	expect(runtime.migrations?.[0]?.new_sqlite_classes).toEqual(
+		v1SqliteAnnotation,
+	)
+	expect(runtime.migrations?.[0]?.transferred_classes).toEqual([
+		{
+			from: 'StorageRunner',
+			from_script: 'kody-production',
+			to: 'StorageRunner',
+		},
+		{ from: 'RunLog', from_script: 'kody-production', to: 'RunLog' },
+		{
+			from: 'PackageRealtimeSession',
+			from_script: 'kody-production',
+			to: 'PackageRealtimeSession',
+		},
+		{
+			from: 'PackageServiceInstance',
+			from_script: 'kody-production',
+			to: 'PackageServiceInstance',
+		},
+	])
+	expect(runtime.env?.preview?.migrations?.[1]).toEqual(v2Delete)
+})
+
+test('production deleted_classes stays for a non-B4SED account and is dropped for B4SED', async () => {
+	const withDelete = [
+		{ tag: 'v1', new_sqlite_classes: v1SqliteAnnotation },
+		v2Delete,
+	]
+	expect(
+		migrationsForRuntimeDeploy({
+			accountId: b4sedCloudflareAccountId,
+			envName: 'production',
+			migrations: withDelete,
+		}),
+	).toEqual([withDelete[0]])
+	expect(
+		migrationsForRuntimeDeploy({
+			accountId: 'upstream-account',
+			envName: 'production',
+			migrations: withDelete,
+		}),
+	).toEqual(withDelete)
+	expect(
+		migrationsForRuntimeDeploy({
+			accountId: b4sedCloudflareAccountId,
+			envName: 'preview',
+			migrations: withDelete,
+		}),
+	).toEqual(withDelete)
+
+	const b4sed = await generateRuntime({
+		envName: 'production',
+		workerPrefix: 'kody',
+		mainWorkerName: 'kody-production',
+		mutateBase(config) {
+			config.migrations = [...(config.migrations ?? []), v2Delete]
+		},
+	})
+	expect(b4sed.runtime.migrations?.map((migration) => migration.tag)).toEqual([
+		'v1',
+	])
+	expect(
+		b4sed.runtime.migrations?.some((migration) => migration.deleted_classes),
+	).toBe(false)
+
+	const upstream = await generateRuntime({
+		envName: 'production',
+		workerPrefix: 'kody',
+		mainWorkerName: 'kody-production',
+		mutateBase(config) {
+			config.account_id = 'upstream-account'
+			const vars = config.env?.production?.vars
+			if (vars) vars.CLOUDFLARE_ACCOUNT_ID = 'upstream-account'
+			config.migrations = [...(config.migrations ?? []), v2Delete]
+		},
+	})
+	expect(upstream.runtime.migrations?.[1]).toEqual(v2Delete)
 })

@@ -102,15 +102,11 @@
 			],
 			// Wrangler 4.131+ builds getDurableObjectClassNameToUseSQLiteMap on
 			// real `wrangler deploy` (container prep) and ignores
-			// transferred_classes. v2 deletes PackageServiceInstance; without a
-			// local-map create, deploy fails even when tag v2 is already
-			// applied remotely. Cloudflare will not re-run v1 (remote tag is
-			// already v2).
+			// transferred_classes. This new_sqlite_classes list is part of
+			// applied tag v1. B4SED live kody-runtime is at v1 and never
+			// exported PackageServiceInstance, so production stops here.
+			// A later deleted_classes tag is Cloudflare error 10074.
 			"new_sqlite_classes": ["PackageServiceInstance"],
-		},
-		{
-			"tag": "v2",
-			"deleted_classes": ["PackageServiceInstance"],
 		},
 	],
 	"observability": {

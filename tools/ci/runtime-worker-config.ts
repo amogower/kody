@@ -32,6 +32,54 @@ const committedRuntimeName = 'kody-runtime'
 const committedPlatformName = 'kody-platform'
 const committedMainName = 'kody'
 
+/** B4SED Cloudflare account. Live kody-runtime migration history stops at v1. */
+export const b4sedCloudflareAccountId = '333b7db000c936f7b7e633a84b600780'
+
+function readAccountId(value: unknown) {
+	return typeof value === 'string' ? value.trim() : ''
+}
+
+export function isB4sedCloudflareAccount(
+	accountId: unknown,
+	envAccountId?: unknown,
+) {
+	return (
+		readAccountId(accountId) === b4sedCloudflareAccountId ||
+		readAccountId(envAccountId) === b4sedCloudflareAccountId
+	)
+}
+
+/**
+ * B4SED live kody-runtime is at Durable Object migration tag v1 and never
+ * exported PackageServiceInstance. Cloudflare error 10074 rejects a
+ * deleted_classes migration for a class the previous script did not export.
+ * Other accounts keep their history, including upstream's v2 delete.
+ * Preview keeps its own chain: fresh scripts create the class and then
+ * delete it in one upload.
+ */
+export function migrationsForRuntimeDeploy(input: {
+	accountId: unknown
+	envAccountId?: unknown
+	envName: string
+	migrations: unknown
+}) {
+	if (
+		input.envName !== 'production' ||
+		!isB4sedCloudflareAccount(input.accountId, input.envAccountId)
+	) {
+		return input.migrations
+	}
+	return omitDeletedClassMigrations(input.migrations)
+}
+
+function omitDeletedClassMigrations(migrations: unknown) {
+	if (!Array.isArray(migrations)) return migrations
+	return migrations.filter((migration) => {
+		if (!migration || typeof migration !== 'object') return true
+		return !Object.hasOwn(migration, 'deleted_classes')
+	})
+}
+
 type JsonRecord = Record<string, unknown>
 
 function fail(message: string): never {
@@ -371,6 +419,11 @@ export async function generate(options: CliOptions) {
 		options.envName,
 		`runtime config "${options.baseConfigPath}"`,
 	)
+	const runtimeAccountId = runtimeConfig.account_id
+	const runtimeEnvAccountId =
+		runtimeEnv.vars && typeof runtimeEnv.vars === 'object'
+			? (runtimeEnv.vars as JsonRecord).CLOUDFLARE_ACCOUNT_ID
+			: undefined
 	const mainEnv = getEnvSection(
 		mainConfig,
 		options.envName,
@@ -406,6 +459,20 @@ export async function generate(options: CliOptions) {
 		}
 	}
 	addPackageAppRoute(runtimeEnv, options.envName)
+	runtimeConfig.migrations = migrationsForRuntimeDeploy({
+		accountId: runtimeAccountId,
+		envAccountId: runtimeEnvAccountId,
+		envName: options.envName,
+		migrations: runtimeConfig.migrations,
+	})
+	if (runtimeEnv.migrations !== undefined) {
+		runtimeEnv.migrations = migrationsForRuntimeDeploy({
+			accountId: runtimeAccountId,
+			envAccountId: runtimeEnvAccountId,
+			envName: options.envName,
+			migrations: runtimeEnv.migrations,
+		})
+	}
 	await writeFile(
 		options.outConfigPath,
 		`${JSON.stringify(runtimeConfig, null, '\t')}\n`,

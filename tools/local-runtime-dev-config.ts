@@ -6,6 +6,19 @@ import { localizeMigrations } from './local-dev-migrations.ts'
 type JsonRecord = Record<string, unknown>
 
 /**
+ * `PackageServiceInstance` is only a v1 sqlite-map annotation on the B4SED
+ * production chain. The runtime script does not export it, and production
+ * does not delete it (Cloudflare error 10074). Local replay omits the class
+ * so wrangler does not require that export. This is not the production
+ * deploy config; `tools/ci/runtime-worker-config.ts` keeps tag v1 as written.
+ */
+const localRuntimeClassesWithoutExport = ['PackageServiceInstance']
+
+function localizeRuntimeMigrations(migrations: unknown) {
+	return localizeMigrations(migrations, localRuntimeClassesWithoutExport)
+}
+
+/**
  * Builds a local-dev variant of the runtime worker config for multi-config
  * `wrangler dev`. Wrangler applies `--var` and dotenv-derived values only to
  * the primary config, registers each worker under `<name>-<env>`, and treats
@@ -71,7 +84,7 @@ export async function writeLocalRuntimeDevConfig({
 	// Wrangler builds the local sqlite-class map from top-level migrations
 	// even when `--env` is set. Put the rewritten chain there (and on the
 	// env block so inherit/override both stay consistent).
-	const localized = localizeMigrations(
+	const localized = localizeRuntimeMigrations(
 		envRecord.migrations ?? config.migrations,
 	)
 	config.migrations = localized
@@ -121,12 +134,14 @@ function requireRuntimeEnv(
 
 function localizeRuntimeConfigMigrations(config: JsonRecord, envName: string) {
 	const envs = config.env as JsonRecord
-	const localizedTop = localizeMigrations(config.migrations)
+	const localizedTop = localizeRuntimeMigrations(config.migrations)
 	config.migrations = localizedTop
 	for (const [name, runtimeEnv] of Object.entries(envs)) {
 		if (!runtimeEnv || typeof runtimeEnv !== 'object') continue
 		const envRecord = runtimeEnv as JsonRecord
-		const localized = localizeMigrations(envRecord.migrations ?? localizedTop)
+		const localized = localizeRuntimeMigrations(
+			envRecord.migrations ?? localizedTop,
+		)
 		envRecord.migrations = localized
 		if (name === envName) {
 			config.migrations = localized
@@ -136,12 +151,11 @@ function localizeRuntimeConfigMigrations(config: JsonRecord, envName: string) {
 
 /**
  * Wrangler 4.131+ applies the local sqlite-class map during `deploy --dry-run`
- * and on real deploy (container prep). The committed runtime production chain
- * transfers `PackageServiceInstance` then deletes it; wrangler ignores
- * `transferred_classes` in that map. Production `wrangler.jsonc` annotates v1
- * with `new_sqlite_classes: ["PackageServiceInstance"]` so live deploy passes.
- * These helpers still localize the full transfer chain for local sqlite
- * (dry-run / check startup). Do not use them as a production deploy config.
+ * and on real deploy (container prep). B4SED production migrations are tag
+ * v1 only (`new_sqlite_classes: ["PackageServiceInstance"]`, no
+ * `deleted_classes`). These helpers still rewrite that chain for local
+ * sqlite (dry-run / check startup) and omit `PackageServiceInstance`, which
+ * the script does not export. Do not use them as a production deploy config.
  */
 export async function writeRuntimeDryRunConfig({
 	runtimeConfigPath,
