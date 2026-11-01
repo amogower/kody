@@ -260,8 +260,8 @@ test('generate rewrites worker names, copies resource ids, and patches the main 
 })
 
 const packageAppRoutes = [
-	{ pattern: 'kody.run/*', zone_name: 'kody.run' },
-	{ pattern: '*.kody.run/*', zone_name: 'kody.run' },
+	{ pattern: 'b4sed.run/*', zone_name: 'b4sed.run' },
+	{ pattern: '*.b4sed.run/*', zone_name: 'b4sed.run' },
 ]
 
 test('generate publishes the package-app custom domain for production', async () => {

@@ -229,12 +229,12 @@ test('writeGeneratedWranglerConfig preserves migrations and copies environment a
 		{ binding: 'EMAIL_BLOBS', bucket_name: 'kody-email-blobs' },
 		{ binding: 'REPO_SESSION_BLOBS', bucket_name: 'kody-repo-session-blobs' },
 	])
-	// Routes are generated from the base-URL vars rather than committed (a
-	// committed route would make `wrangler dev` resolve every local request as
-	// that production host). The package-app host is attached to the runtime
-	// Worker (ADR 0016), so the main Worker publishes only the app origin.
+	// The committed b4sed.codes custom domain stays in the route set. The
+	// package-app host is attached to the runtime Worker (ADR 0016), so the
+	// main Worker publishes only app origins.
 	expect(typeof production?.vars?.PACKAGE_APP_BASE_URL).toBe('string')
 	expect(production?.routes).toEqual([
+		{ pattern: 'b4sed.codes', custom_domain: true },
 		{ pattern: 'heykody.dev', custom_domain: true },
 	])
 	// Publishing routes otherwise drops the workers.dev trigger.
@@ -323,11 +323,22 @@ test('writeGeneratedWranglerConfig preserves migrations and copies environment a
 	// Publishing a package-app domain without the app origin would replace the
 	// Worker's custom-domain set with a partial one, detaching the app origin
 	// and deleting its DNS record. That must fail the deploy, not ship.
+	// The committed config now has APP_BASE_URL, so drop it on a copy.
 	using _exit = mockProcessExit()
+	const noAppOriginConfigPath = path.join(
+		temp.dir,
+		'wrangler-no-app-origin.jsonc',
+	)
+	const noAppOriginConfig = parseJsonc<{
+		env: { production: { vars: Record<string, unknown> } }
+	}>(await readFile(workerWranglerConfigPath, 'utf8'))
+	delete noAppOriginConfig.env.production.vars.APP_BASE_URL
+	await writeFile(noAppOriginConfigPath, JSON.stringify(noAppOriginConfig))
 	await expect(
-		writeGeneratedWranglerConfig(
-			productionArgs(path.join(temp.dir, 'wrangler-no-app-origin.json')),
-		),
+		writeGeneratedWranglerConfig({
+			...productionArgs(path.join(temp.dir, 'wrangler-no-app-origin.json')),
+			baseConfigPath: noAppOriginConfigPath,
+		}),
 	).rejects.toThrow('process.exit called')
 	expect(consoleError).toHaveBeenCalledWith(
 		expect.stringContaining('without "APP_BASE_URL"'),
@@ -352,6 +363,7 @@ test('writeGeneratedWranglerConfig keeps legacy app hosts attached during a doma
 	const packageAppBaseUrl = production?.vars?.PACKAGE_APP_BASE_URL
 	expect(typeof packageAppBaseUrl).toBe('string')
 	expect(production?.routes).toEqual([
+		{ pattern: 'b4sed.codes', custom_domain: true },
 		{ pattern: 'heykody.app', custom_domain: true },
 		{ pattern: 'heykody.dev', custom_domain: true },
 	])

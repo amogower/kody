@@ -35,24 +35,19 @@ const adhocPolicyProof = {
 	readBackVerified: true,
 } as const
 
-test('DR deployment reconciles adhoc policy before Worker deploy when authorized', () => {
+test('production deploy is manual and names only the live workers', () => {
 	const workflow = readFileSync(
 		new URL('../../.github/workflows/deploy.yml', import.meta.url),
 		'utf8',
 	)
-	const policyStep = workflow.indexOf(
-		'name: 🔒 Reconcile DR backup retention policies when authorized',
-	)
-	const deployStep = workflow.indexOf(
-		'name: ☁️ Deploy backup control plane to DR account',
-	)
-	expect(policyStep).toBeGreaterThan(0)
-	expect(deployStep).toBeGreaterThan(policyStep)
+	expect(workflow).toContain('workflow_dispatch:')
+	expect(workflow).toContain('--name kody-production')
+	expect(workflow).toContain('--name kody-platform')
+	expect(workflow).toContain('--name kody-runtime')
+	expect(workflow).toContain('--name kody-jobs')
+	expect(workflow).toContain('--name kody-highlight')
 	expect(workflow).toContain(
-		'DR_BACKUP_ADMIN_TOKEN: ${{ secrets.DR_BACKUP_ADMIN_TOKEN }}',
-	)
-	expect(workflow).toContain(
-		'run: node tools/ci/backup-resources-reconcile-cli.ts',
+		'Not deployed: kody-api, kody-api-docs, kody-status, kody-nx-cache, kody-production-d1-backups.',
 	)
 })
 

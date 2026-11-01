@@ -1,15 +1,9 @@
 name: 🔎 Preview
 
+# MANUAL ONLY. Do not add a pull_request, pull_request_target, push, or
+# workflow_run trigger. Deploy and cleanup both change Cloudflare. Dispatch
+# this workflow by hand.
 on:
-  pull_request:
-    branches:
-      - main
-    types:
-      - opened
-      - reopened
-      - synchronize
-      - ready_for_review
-      - closed
   workflow_dispatch:
     inputs:
       action:
@@ -58,13 +52,7 @@ jobs:
         preview-${{ github.event.pull_request.number || inputs.pr_number ||
         github.run_id }}
       url: ${{ steps.deploy_preview.outputs.url }}
-    if: >-
-      (github.event_name == 'pull_request' &&
-        github.event.action != 'closed' &&
-        github.event.pull_request.head.repo.fork == false &&
-        github.event.pull_request.draft == false) ||
-      (github.event_name == 'workflow_dispatch' &&
-        inputs.action == 'deploy')
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v6.0.2
@@ -565,9 +553,19 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_ENV: preview
           WRANGLER_CONFIG: ${{ steps.resources.outputs.wrangler_config }}
+          PREVIEW_SEED_EMAIL: ${{ secrets.PREVIEW_SEED_EMAIL }}
+          PREVIEW_SEED_PASSWORD: ${{ secrets.PREVIEW_SEED_PASSWORD }}
         run: |
           set -euo pipefail
-          node tools/seed-test-data.ts --remote --config "$WRANGLER_CONFIG" --email me@kentcdodds.com --password ilikecode
+          if [ -z "${PREVIEW_SEED_EMAIL:-}" ] && [ -z "${PREVIEW_SEED_PASSWORD:-}" ]; then
+            echo "Skipping preview seed. Set repository secrets PREVIEW_SEED_EMAIL and PREVIEW_SEED_PASSWORD to create a user."
+            exit 0
+          fi
+          if [ -z "${PREVIEW_SEED_EMAIL:-}" ] || [ -z "${PREVIEW_SEED_PASSWORD:-}" ]; then
+            echo "PREVIEW_SEED_EMAIL and PREVIEW_SEED_PASSWORD must both be set, or both be unset." >&2
+            exit 1
+          fi
+          node tools/seed-test-data.ts --remote --config "$WRANGLER_CONFIG" --email "$PREVIEW_SEED_EMAIL" --password "$PREVIEW_SEED_PASSWORD"
 
       - name: 🩺 Healthcheck (preview)
         shell: bash
@@ -873,12 +871,7 @@ jobs:
     permissions:
       contents: read
       deployments: write
-    if: >-
-      (github.event_name == 'pull_request' &&
-        github.event.action == 'closed' &&
-        github.event.pull_request.head.repo.fork == false) ||
-      (github.event_name == 'workflow_dispatch' &&
-        inputs.action == 'cleanup')
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'cleanup'
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v6.0.2

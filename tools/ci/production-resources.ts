@@ -1,4 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises'
+import { isExecutedDirectly } from '../node-runtime.ts'
 import {
 	ensureArtifactsAccountEventSubscription,
 	ensureCloudflareQueue,
@@ -29,6 +30,74 @@ import {
 } from './origin-production-deploy-state.ts'
 
 type Command = 'ensure'
+
+// Live B4SED has no kody-email-delivery-events subscription. Do not create it
+// on deploy. The kody-email-delivery queue consumer stays, because that queue
+// exists. Andrew: turn this on only to start Email Sending delivery events.
+const ensureEmailDeliveryEventSubscription = false
+
+const namedProductionOverrideKeys = [
+	'APP_BASE_URL',
+	'CLOUDFLARE_ACCOUNT_ID',
+	'USER_EMAIL_DOMAIN',
+	'SYSTEM_EMAIL_DOMAIN',
+] as const
+
+function isProductionOverrideKey(key: string) {
+	return (
+		(namedProductionOverrideKeys as ReadonlyArray<string>).includes(key) ||
+		key.includes('_LEGACY_') ||
+		key.startsWith('LEGACY_')
+	)
+}
+
+/**
+ * Refuse a non-empty process env value that would replace a committed
+ * production var with something else. Empty values are not overrides.
+ * `ALLOW_ENV_VAR_OVERRIDE=1` is the explicit opt-out.
+ */
+export function assertProductionEnvOverridesMatchCommitted(input: {
+	committedVars: Record<string, unknown>
+	env: NodeJS.ProcessEnv
+}) {
+	if (input.env.ALLOW_ENV_VAR_OVERRIDE === '1') return
+	const mismatches: Array<string> = []
+	for (const [key, raw] of Object.entries(input.env)) {
+		if (!isProductionOverrideKey(key)) continue
+		if (typeof raw !== 'string') continue
+		const override = raw.trim()
+		if (!override) continue
+		const committedRaw = input.committedVars[key]
+		const committed =
+			typeof committedRaw === 'string' ? committedRaw.trim() : ''
+		if (override !== committed) {
+			mismatches.push(
+				`${key} is ${JSON.stringify(override)} but committed env.production.vars.${key} is ${committed ? JSON.stringify(committed) : 'unset'}`,
+			)
+		}
+	}
+	if (mismatches.length === 0) return
+	throw new Error(
+		[
+			'Refusing production env overrides that differ from the committed wrangler config.',
+			'Set ALLOW_ENV_VAR_OVERRIDE=1 to apply them anyway.',
+			...mismatches,
+		].join('\n'),
+	)
+}
+
+async function readCommittedProductionVars(wranglerConfigPath: string) {
+	const config = parseJsonc<Record<string, unknown>>(
+		await readFile(wranglerConfigPath, 'utf8'),
+	)
+	const env = config.env
+	if (!env || typeof env !== 'object') return {}
+	const production = (env as Record<string, unknown>).production
+	if (!production || typeof production !== 'object') return {}
+	const vars = (production as Record<string, unknown>).vars
+	if (!vars || typeof vars !== 'object' || Array.isArray(vars)) return {}
+	return vars as Record<string, unknown>
+}
 
 type CliOptions = {
 	wranglerConfigPath: string
@@ -595,10 +664,13 @@ async function ensureProductionResources(options: CliOptions) {
 	const accountId = process.env.CLOUDFLARE_ACCOUNT_ID?.trim()
 	const apiToken = process.env.CLOUDFLARE_API_TOKEN?.trim()
 	const zoneId = process.env.CLOUDFLARE_ZONE_ID?.trim()
-	if ((!accountId || !apiToken || !zoneId) && !options.dryRun) {
+	if ((!accountId || !apiToken) && !options.dryRun) {
 		fail(
-			'Missing CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID, or CLOUDFLARE_API_TOKEN for Queue provisioning.',
+			'Missing CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN for Queue provisioning.',
 		)
+	}
+	if (ensureEmailDeliveryEventSubscription && !zoneId && !options.dryRun) {
+		fail('Missing CLOUDFLARE_ZONE_ID for the Email Sending event subscription.')
 	}
 	const queueClient = {
 		accountId: accountId ?? 'dry-run-account',
@@ -679,19 +751,24 @@ async function ensureProductionResources(options: CliOptions) {
 		name: bindings.webhookDispatchDeadLetterQueueName,
 		existingQueues,
 	})
-	const emailSendingDomain = resolveEmailSendingDomain({
-		dryRun: options.dryRun,
-		committedUserEmailDomain: bindings.committedUserEmailDomain,
-	})
-	const emailEventSubscription = await ensureEmailSendingEventSubscription({
-		accountId: accountId ?? 'dry-run-account',
-		apiToken: apiToken ?? 'dry-run-token',
-		name: truncateWithSuffix(bindings.workerName, '-email-delivery-events', 63),
-		queueId: emailDeliveryQueue.id,
-		domain: emailSendingDomain,
-		zoneId: zoneId ?? 'dry-run-zone',
-		dryRun: options.dryRun,
-	})
+	const emailEventSubscription = ensureEmailDeliveryEventSubscription
+		? await ensureEmailSendingEventSubscription({
+				accountId: accountId ?? 'dry-run-account',
+				apiToken: apiToken ?? 'dry-run-token',
+				name: truncateWithSuffix(
+					bindings.workerName,
+					'-email-delivery-events',
+					63,
+				),
+				queueId: emailDeliveryQueue.id,
+				domain: resolveEmailSendingDomain({
+					dryRun: options.dryRun,
+					committedUserEmailDomain: bindings.committedUserEmailDomain,
+				}),
+				zoneId: zoneId ?? 'dry-run-zone',
+				dryRun: options.dryRun,
+			})
+		: null
 	const artifactsEventSubscription =
 		await ensureArtifactsAccountEventSubscription({
 			accountId: accountId ?? 'dry-run-account',
@@ -734,6 +811,13 @@ async function ensureProductionResources(options: CliOptions) {
 	console.error(
 		`Origin production deploy state: ${deployPlan.mode} (${deployPlan.originEntry} entry${deployPlan.runOriginBootstrap ? ', bootstrap then transfer' : ''}). ${deployPlan.reason}`,
 	)
+
+	assertProductionEnvOverridesMatchCommitted({
+		committedVars: await readCommittedProductionVars(
+			options.wranglerConfigPath,
+		),
+		env: process.env,
+	})
 
 	const generatedConfigPath = await writeGeneratedWranglerConfig({
 		baseConfigPath: options.wranglerConfigPath,
@@ -872,7 +956,9 @@ async function ensureProductionResources(options: CliOptions) {
 	console.log(
 		`package_events_dispatch_dead_letter_queue_name=${packageEventsDispatchDeadLetterQueue.name}`,
 	)
-	console.log(`email_event_subscription_id=${emailEventSubscription.id}`)
+	console.log(
+		`email_event_subscription_id=${emailEventSubscription?.id ?? 'skipped'}`,
+	)
 	console.log(
 		`artifacts_event_subscription_id=${artifactsEventSubscription.id}`,
 	)
@@ -893,4 +979,6 @@ async function main() {
 	}
 }
 
-await main()
+if (isExecutedDirectly(import.meta.url)) {
+	await main()
+}

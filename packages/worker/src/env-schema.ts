@@ -325,6 +325,10 @@ export const EnvSchema = object({
 	// Purchasable Pro ($12 / $120) with the prepaid credit wallet.
 	STRIPE_PRO_PRICE_ID: optionalNonEmptyStringSchema,
 	STRIPE_PRO_YEARLY_PRICE_ID: optionalNonEmptyStringSchema,
+	// Live B4SED Standard prices. Plan matching still uses the retired Standard
+	// list in billing-config.ts (these same ids). Not the checkout price.
+	STRIPE_STANDARD_PRICE_ID: optionalNonEmptyStringSchema,
+	STRIPE_STANDARD_YEARLY_PRICE_ID: optionalNonEmptyStringSchema,
 	// Stripe Billing Portal configuration (`bpc_...`) used for Manage
 	// subscription and the prorated plan-change flow. Unset → Stripe account
 	// default configuration.

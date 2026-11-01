@@ -1,17 +1,14 @@
 name: 🧊 Nx cache worker
 
+# Not live on B4SED. Dispatch is a no-op so this workflow cannot upload
+# kody-nx-cache or attach nx-cache.kody.codes. The worker package stays in
+# the repo.
 on:
   workflow_dispatch:
     inputs:
       reason:
         description: Why this redeploy (token rotation, healthcheck, etc.)
         required: false
-        type: string
-  workflow_call:
-    inputs:
-      sha:
-        description: Commit SHA to deploy
-        required: true
         type: string
 
 permissions:
@@ -24,16 +21,13 @@ concurrency:
 
 jobs:
   deploy-nx-cache-worker:
-    # github is the caller context: event_name stays workflow_run /
-    # workflow_dispatch, never workflow_call. Manual runs are main-only;
-    # production deploy already gates the workflow_call.
-    if: github.event_name != 'workflow_dispatch' || github.ref_name == 'main'
+    # B4SED does not deploy kody-nx-cache.
+    if: false
     runs-on: ubuntu-latest
     name: 🧊 Deploy Nx cache worker
     timeout-minutes: 8
     environment:
       name: production
-      url: https://nx-cache.kody.codes
     steps:
       - name: 📦 Checkout
         uses: actions/checkout@v6.0.2

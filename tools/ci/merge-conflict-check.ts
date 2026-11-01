@@ -2,7 +2,7 @@ import { isExecutedDirectly } from '../node-runtime.ts'
 
 /**
  * GitHub does not start `pull_request` workflows when a pull request is
- * `dirty`: it cannot build the merge commit, so Validate, Preview, and CLA
+ * `dirty`: it cannot build the merge commit, so Validate and CLA
  * never report a check. This command runs from the default-branch
  * `pull_request_target` workflow, which still starts, and writes a check onto
  * the head SHA. A push to the base branch reruns that check for every open
@@ -304,11 +304,11 @@ function conflictedSummary(input: {
 	draft: boolean
 }) {
 	const ready = input.draft
-		? ' Validate, Preview, and CLA also stay skipped until the pull request is marked ready for review.'
+		? ' Validate and CLA also stay skipped until the pull request is marked ready for review.'
 		: ''
 	return [
 		`This pull request conflicts with ${input.base} (mergeable_state: ${input.state}).`,
-		'GitHub does not start Validate, Preview, or CLA while it cannot build the merge commit, so those checks never appear for this commit.',
+		'GitHub does not start Validate or CLA while it cannot build the merge commit, so those checks never appear for this commit.',
 		`Merge ${input.base} into this branch and push. Those workflows run on the next update once the branch is mergeable.${ready}`,
 	].join('\n\n')
 }
@@ -317,12 +317,12 @@ function clearSummary(input: { base: string; state: string; draft: boolean }) {
 	if (input.draft) {
 		return [
 			`This draft has no merge conflicts with ${input.base} (mergeable_state: ${input.state}).`,
-			'Validate, Preview, and CLA stay skipped until the pull request is marked ready for review.',
+			'Validate and CLA stay skipped until the pull request is marked ready for review.',
 		].join('\n\n')
 	}
 	return [
 		`This pull request has no merge conflicts with ${input.base} (mergeable_state: ${input.state}).`,
-		'Validate, Preview, and CLA run from their pull_request workflows.',
+		'Validate and CLA run from their pull_request workflows.',
 	].join('\n\n')
 }
 
@@ -333,7 +333,7 @@ function undeterminedSummary(input: {
 }) {
 	const lines = [
 		`GitHub has not published mergeability for this pull request yet (mergeable_state: ${input.state}).`,
-		`Re-run the ${mergeConflictCheckName} check. Validate, Preview, and CLA run only after GitHub can build the merge commit with ${input.base}.`,
+		`Re-run the ${mergeConflictCheckName} check. Validate and CLA run only after GitHub can build the merge commit with ${input.base}.`,
 	]
 	if (input.detail) lines.push(input.detail.slice(0, 500))
 	return lines.join('\n\n')
@@ -451,7 +451,7 @@ function createGithubClient(input: {
 					title: 'Checking mergeability',
 					summary: [
 						'Checking whether this pull request conflicts with its base branch.',
-						'GitHub skips Validate, Preview, and CLA when the merge commit cannot be built. This check fails in that case so the pull request is not treated as green.',
+						'GitHub skips Validate and CLA when the merge commit cannot be built. This check fails in that case so the pull request is not treated as green.',
 					].join('\n\n'),
 				},
 			})

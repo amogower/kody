@@ -1,6 +1,9 @@
 {
 	"$schema": "../../node_modules/wrangler/config-schema.json",
 	"name": "kody",
+	// B4SED LTD. A plain `wrangler deploy` must not follow an ambient login
+	// into another account.
+	"account_id": "333b7db000c936f7b7e633a84b600780",
 	"compatibility_date": "2026-04-16",
 	// `enhanced_error_serialization` is date-default on 2026-04-21. Opt in
 	// explicitly so JSRPC from the Artifacts binding preserves `name`/`code`
@@ -226,6 +229,16 @@
 	// 0016); the main worker has no scheduled handler.
 	"env": {
 		"production": {
+			// Custom domain for the app origin. Wrangler replaces the script's
+			// route list, so this has to be in the deployed config. Local dev
+			// strips routes (tools/local-origin-dev-config.ts).
+			"workers_dev": true,
+			"routes": [
+				{
+					"pattern": "b4sed.codes",
+					"custom_domain": true,
+				},
+			],
 			"ratelimits": [
 				{
 					"name": "AUTH_RATE_LIMITER",
@@ -391,11 +404,13 @@
 				{
 					"binding": "APP_DB",
 					"database_name": "kody",
+					"database_id": "05b109c7-835e-4c14-828a-da02bfe0370f",
 					"migrations_dir": "./migrations",
 				},
 				{
 					"binding": "AUDIT_DB",
 					"database_name": "kody-audit",
+					"database_id": "6fdea4ab-8377-40ff-a61d-9b544c00ff74",
 					"migrations_dir": "./audit-migrations",
 				},
 			],
@@ -487,9 +502,11 @@
 			"kv_namespaces": [
 				{
 					"binding": "OAUTH_KV",
+					"id": "3614445cf9ef43929b3e57640e938a70",
 				},
 				{
 					"binding": "BUNDLE_ARTIFACTS_KV",
+					"id": "c86573e5403642c9945a8c90291d5d83",
 				},
 			],
 			"r2_buckets": [
@@ -568,51 +585,40 @@
 				// capture is unaffected.
 				"SENTRY_TRACES_SAMPLE_RATE": 0,
 				"ARTIFACTS_NAMESPACE": "production",
-				// Origin hosted package apps are served from. Must stay a
-				// separate registrable domain from APP_BASE_URL — that is what
-				// makes package code cross-site from the app origin, so
-				// `kody_session` never attaches to it. Intentionally unset for
-				// preview and tests, which keep serving package apps inline on
-				// the app origin.
+				// App origin. The b4sed.codes custom domain is the production
+				// route above. Local dev strips that route.
+				"APP_BASE_URL": "https://b4sed.codes",
+				"CLOUDFLARE_ACCOUNT_ID": "333b7db000c936f7b7e633a84b600780",
+				// Hosted package apps. Must stay a separate registrable domain
+				// from APP_BASE_URL so package code is cross-site from the app
+				// origin and `kody_session` never attaches to it. Preview and
+				// tests leave this unset and serve package apps inline.
 				//
 				// Production deploy publishes apex and wildcard zone routes for
-				// this host on the runtime Worker (never a custom domain in the
-				// package-app zone); DNS placeholder records are ensured
-				// separately. The routes deliberately do not live here, because
-				// Wrangler resolves *local dev* request URLs against the first
-				// configured route — every `npm run dev` request would arrive
-				// as https://kody.run/... and send local logins to the real
-				// domain. See docs/contributing/setup-manifest.md.
-				"PACKAGE_APP_BASE_URL": "https://kody.run",
-				// Email domains are committed (not just GitHub Actions vars) so
-				// they can never silently rederive from APP_BASE_URL. Canonical
-				// email lives on kody.codes. Outbound always sends from the
-				// canonical domains, which requires Email Routing + Email
-				// Sending verification on the kody.codes zone.
-				"USER_EMAIL_DOMAIN": "inbox.kody.codes",
-				"SYSTEM_EMAIL_DOMAIN": "kody.codes",
-				// Fathom Analytics site id (public, non-secret). Production
-				// only so local dev, preview, and tests never send pageviews.
-				"FATHOM_SITE_ID": "WKKSDJGN",
+				// this host on the runtime Worker (b4sed.run/* and
+				// *.b4sed.run/*, zone b4sed.run), never a custom domain in the
+				// package-app zone. Those routes live on the runtime worker's
+				// production env, not here.
+				"PACKAGE_APP_BASE_URL": "https://b4sed.run",
+				// Committed so a deploy cannot rederive them from APP_BASE_URL.
+				// Transactional From is kody@b4sed.codes. Reply-To defaults to
+				// support@b4sed.codes. User inboxes are <user>@inbox.b4sed.codes.
+				"USER_EMAIL_DOMAIN": "inbox.b4sed.codes",
+				"SYSTEM_EMAIL_DOMAIN": "b4sed.codes",
+				// B4SED production has no Fathom site. Empty keeps the tracker off.
+				"FATHOM_SITE_ID": "",
 				// Public playlist whose latest Atom-feed videos may open in
 				// the site-wide `/?youtubeId=` overlay. Tests leave this unset.
 				"YOUTUBE_ALLOWED_PLAYLIST_IDS": "PLV5CVI1eNcJhP4nrJt85L7PxHjebFpDfY",
-				// Public (non-secret) Stripe Price ids for production
-				// subscriptions. Coupled to the live Stripe account: if a
-				// price is regenerated in Stripe, update the value in the
-				// same change or subscription plan matching silently degrades
-				// to the kody_plan metadata fallback. Checkout sessions are
-				// created server-side for authenticated users (no public
-				// Payment Link). STRIPE_PRO_PRICE_ID /
-				// STRIPE_PRO_YEARLY_PRICE_ID are the purchasable Pro ($12 /
-				// $120) on prod_VKxtLxMdjEkOdu ("Kody Pro") with the prepaid
-				// credit wallet (#2617). The previous Standard $12/$120 and
-				// Pro $49/$480 ids (prod_V1ChgPPenrxsAX, now "Kody Pro
-				// (legacy)") live in retiredStandardPriceIds /
-				// retiredProPriceIds; reusing either here would make those
-				// subscribers wallet-eligible.
-				"STRIPE_PRO_PRICE_ID": "price_1UKHxZLAQpAnsYszwwqZTCCT",
-				"STRIPE_PRO_YEARLY_PRICE_ID": "price_1UKHxaLAQpAnsYszlsVHHXjK",
+				// Public (non-secret) Stripe Price ids on the live B4SED account.
+				// Checkout uses STRIPE_PRO_PRICE_ID / STRIPE_PRO_YEARLY_PRICE_ID.
+				// Standard ids are what live subscribers are on. billing-config.ts
+				// also lists these four ids in retiredProPriceIds /
+				// retiredStandardPriceIds.
+				"STRIPE_PRO_PRICE_ID": "price_1UChg1LAQpAnsYszAYn6eGgt",
+				"STRIPE_PRO_YEARLY_PRICE_ID": "price_1UChg2LAQpAnsYszKAFCR778",
+				"STRIPE_STANDARD_PRICE_ID": "price_1U3sg6LAQpAnsYszGeL2nc8O",
+				"STRIPE_STANDARD_YEARLY_PRICE_ID": "price_1U3sg6LAQpAnsYszqq9abwIY",
 				// Stripe Billing Portal configuration used by Manage
 				// subscription and by switches to Pro for existing
 				// subscribers (subscription_update_confirm flow pinned to the
@@ -621,16 +627,15 @@
 				// Preview and test leave it unset so Stripe uses the account
 				// default configuration.
 				"STRIPE_BILLING_PORTAL_CONFIGURATION_ID": "bpc_1UBzc8LAQpAnsYszyBkO2N3F",
-				// Disaster-recovery exporter → locked R2 bucket in the KCD
-				// (DR) account. The companion S3 credentials are Worker
-				// secrets set out-of-band via the Cloudflare API.
-				"DR_EXPORT_ENABLED": "true",
-				"DR_BACKUP_ACCOUNT_ID": "a41d50ecaf0ae0f86dd1824ef6729cb2",
-				"DR_BACKUP_BUCKET_NAME": "kody-production-backups",
-				// Public verification material shared with the DR control plane.
-				// The matching signing private key remains control-plane-only.
-				"BACKUP_MANIFEST_SIGNING_KEY_ID": "kody-dr-2026-07",
-				"BACKUP_MANIFEST_VERIFYING_PUBLIC_KEY_SPKI_BASE64": "MCowBQYDK2VwAyEA3jqjPcGTzWefE5PGyRBdUQKAEj7FFGtFIz+223sbt9A=",
+				// Disaster-recovery export is off. These are empty on purpose:
+				// do not point DR_BACKUP_ACCOUNT_ID or the manifest signing
+				// key at another Cloudflare account. Export stays disabled
+				// until B4SED has its own DR account and key.
+				"DR_EXPORT_ENABLED": "",
+				"DR_BACKUP_ACCOUNT_ID": "",
+				"DR_BACKUP_BUCKET_NAME": "",
+				"BACKUP_MANIFEST_SIGNING_KEY_ID": "",
+				"BACKUP_MANIFEST_VERIFYING_PUBLIC_KEY_SPKI_BASE64": "",
 			},
 		},
 		"preview": {
