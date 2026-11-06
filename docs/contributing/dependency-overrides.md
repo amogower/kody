@@ -233,19 +233,6 @@ this override cannot be removed yet.
 
 The upper bound `<0.36.0` keeps the override within the same 0.35 minor line.
 
-### `fflate` → `>=0.7.5 <0.9.0`
-
-Floors every `fflate` copy. `satori@0.33.5` pins `fflate@0.7.3` exactly and
-`@shuding/opentype.js@1.4.0-beta.0` declares `fflate@^0.7.3`, so both would
-otherwise resolve a vulnerable 0.7.x. `@cloudflare/worker-bundler` already uses
-`fflate@^0.8.2`, so the range spans both lines and keeps one hoisted copy.
-
-- [GHSA-px8p-9vwx-vf98](https://github.com/advisories/GHSA-px8p-9vwx-vf98) —
-  `unzipSync` can enter an infinite loop when parsing malformed ZIP64 archives
-  (`>=0.7.0, <0.7.5`)
-
-The upper bound `<0.9.0` keeps both consumers on the 0.7/0.8 API.
-
 ### `undici` (under `wrangler` / `miniflare` / `@cloudflare/vite-plugin`) → `>=7.30.1 <8.0.0`
 
 Floors only the Cloudflare 7.x undici copies. The root `undici@6.28.1` is
@@ -325,11 +312,6 @@ override. Current floors:
   [GHSA-f2hq-32vh-53cc](https://github.com/advisories/GHSA-f2hq-32vh-53cc)
   (quadratic CPU consumption when decoding a header of many joinable RFC 2047
   base64 words, `>=3.0.0, <4.0.8`)
-- `satori` `^0.33.5` in `@kody/worker` —
-  [GHSA-wx4j-mvgx-mqwp](https://github.com/advisories/GHSA-wx4j-mvgx-mqwp)
-  (improper escaping in generated SVG, `>=0.0.27, <0.33.5`). `0.33.x` keeps the
-  `satori/standalone` and `satori/yoga.wasm` entry points the Worker imports;
-  `0.63.x` renames the wasm entry point and is out of scope.
 - `vite` `>=8.3.3 <8.3.5` at the root — an advisory floor plus a compatibility
   cap. The floor is `8.3.3` for:
   - [GHSA-698v-4r3x-3vcv](https://github.com/advisories/GHSA-698v-4r3x-3vcv) —
@@ -389,11 +371,6 @@ override. Current floors:
   [GHSA-f2hq-32vh-53cc](https://github.com/advisories/GHSA-f2hq-32vh-53cc)
   (quadratic CPU consumption when decoding a header of many joinable RFC 2047
   base64 words, `>=3.0.0, <4.0.8`)
-- `satori` `^0.33.5` in `@kody/worker` —
-  [GHSA-wx4j-mvgx-mqwp](https://github.com/advisories/GHSA-wx4j-mvgx-mqwp)
-  (improper escaping in generated SVG, `>=0.0.27, <0.33.5`). `0.33.x` keeps the
-  `satori/standalone` and `satori/yoga.wasm` entry points the Worker imports;
-  `0.63.x` renames the wasm entry point and is out of scope.
 - `vite` `>=8.3.3 <8.3.5` at the root — an advisory floor plus a compatibility
   cap. The floor is `8.3.3` for:
   - [GHSA-698v-4r3x-3vcv](https://github.com/advisories/GHSA-698v-4r3x-3vcv) —
